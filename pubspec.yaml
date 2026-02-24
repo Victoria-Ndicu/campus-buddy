@@ -1,5 +1,6 @@
-name: campus_app
+name: campus_buddy
 description: "A new Flutter project."
+
 publish_to: 'none'
 
 version: 1.0.0+1
@@ -53,6 +54,9 @@ dev_dependencies:
   build_runner: ^2.4.12
   flutter_lints: ^4.0.0
   mocktail: ^1.0.4
+  flutter_native_splash: ^2.4.0
 
 flutter:
   uses-material-design: true
+
+

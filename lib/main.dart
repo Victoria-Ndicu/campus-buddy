@@ -14,6 +14,7 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_native_splash/flutter_native_splash.dart';
 
 // ─────────────────────────────────────────────────────────────
 //  ENTRY POINT
@@ -34,6 +35,17 @@ void main() {
 
   runApp(const _SetupCheckApp());
 }
+// void main() {
+//   WidgetsBinding widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
+//   FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
+
+//   // Do your setup here (loading fonts, etc)
+
+//   runApp(const _SetupCheckApp());
+
+//   // This line removes the splash screen
+//   FlutterNativeSplash.remove();
+// }
 
 // ─────────────────────────────────────────────────────────────
 //  ROOT  — no Router, no Firebase, no state management
@@ -273,7 +285,7 @@ class _SplashScreenState extends State<_SplashScreen>
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              'Your campus. Simplified.',
+                              'Your campus life Simplified.',
                               style: TextStyle(
                                 fontSize: 14,
                                 color: Colors.white.withOpacity(0.60),
