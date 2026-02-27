@@ -1,12 +1,18 @@
 // ============================================================
 //  CampusBuddy — home_screen.dart  (FULLY INTERACTIVE)
 //
-//  Changes from original:
-//   ✅  Bottom nav tab 1 (📚 Study)  → pushes StudyBuddyHome
-//   ✅  Module tile "StudyBuddy"     → pushes StudyBuddyHome
-//   ✅  Quick-action "Find Tutor"    → pushes StudyBuddyHome
-//   ✅  Stat chip "Study Groups"     → pushes StudyBuddyHome
-//   ✅  Search "Find a Tutor"        → pushes StudyBuddyHome
+//  Navigation wiring:
+//   ✅  Bottom nav tab 1 (📚 Study)     → pushes StudyBuddyHome
+//   ✅  Bottom nav tab 2 (🛒 Market)    → pushes CampusMarketHome
+//   ✅  Module tile "StudyBuddy"        → pushes StudyBuddyHome
+//   ✅  Module tile "CampusMarket"      → pushes CampusMarketHome
+//   ✅  Quick-action "Find Tutor"       → pushes StudyBuddyHome
+//   ✅  Quick-action "Post Item"        → pushes CampusMarketHome
+//   ✅  Stat chip "Study Groups"        → pushes StudyBuddyHome
+//   ✅  Stat chip "New Listings"        → pushes CampusMarketHome
+//   ✅  Search "Find a Tutor"           → pushes StudyBuddyHome
+//   ✅  Search "Browse Market"          → pushes CampusMarketHome
+//   ✅  Activity feed "CampusMarket"    → pushes CampusMarketHome
 //   All other tabs still show "coming soon" snackbar as before.
 // ============================================================
 
@@ -15,6 +21,9 @@ import 'package:flutter/services.dart';
 
 // ── StudyBuddy module ─────────────────────────────────────────
 import '../../study_buddy/study_buddy.dart';
+
+// ── CampusMarket module ───────────────────────────────────────
+import '../../campus_market/campus_market.dart';
 
 // ─────────────────────────────────────────────────────────────
 //  BRAND COLOURS
@@ -175,7 +184,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _activities = _buildActivities();
   }
 
-  // ── helpers ──────────────────────────────────────────────
+  // ── navigation helpers ───────────────────────────────────
 
   /// Opens StudyBuddyHome by pushing it onto the stack.
   void _openStudyBuddy() {
@@ -184,6 +193,29 @@ class _HomeScreenState extends State<HomeScreen> {
       context,
       MaterialPageRoute(builder: (_) => StudyBuddyHome()),
     );
+  }
+
+  /// Opens CampusMarketHome by pushing it onto the stack.
+  void _openCampusMarket() {
+    HapticFeedback.mediumImpact();
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => CampusMarketHome()),
+    );
+  }
+
+  /// Routes a navTab index to the correct screen / snackbar.
+  void _handleTab(int tab, {String label = ''}) {
+    switch (tab) {
+      case 1:
+        _openStudyBuddy();
+        break;
+      case 2:
+        _openCampusMarket();
+        break;
+      default:
+        if (label.isNotEmpty) _snack('Opening $label…');
+    }
   }
 
   void _goTab(int tab) => setState(() => _navIndex = tab);
@@ -202,6 +234,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _markRead(int i) {
     if (!_activities[i].unread) { _snack('Already read', color: _C.text3); return; }
+    // If activity is from CampusMarket, open market
+    if (_activities[i].time.contains('CampusMarket')) {
+      setState(() => _activities[i].unread = false);
+      _openCampusMarket();
+      return;
+    }
     setState(() => _activities[i].unread = false);
     _snack('Marked as read ✓');
   }
@@ -234,9 +272,10 @@ class _HomeScreenState extends State<HomeScreen> {
     showDialog(
       context: context,
       builder: (_) => _SearchDialog(onNavigate: (tab, label) {
-        // Tab 1 = StudyBuddy → push screen; others → snackbar
         if (tab == 1) {
           _openStudyBuddy();
+        } else if (tab == 2) {
+          _openCampusMarket();
         } else {
           _goTab(tab);
           _snack('Opening $label…');
@@ -274,25 +313,19 @@ class _HomeScreenState extends State<HomeScreen> {
               onProfile:       _showProfile,
             ),
           ),
-          // 2. Quick stats — tab 1 → StudyBuddy
+          // 2. Quick stats
           SliverToBoxAdapter(
-            child: _QuickStatsRow(onTap: (tab) {
-              if (tab == 1) { _openStudyBuddy(); } else { _goTab(tab); }
-            }),
+            child: _QuickStatsRow(onTap: (tab) => _handleTab(tab)),
           ),
-          // 3. Quick actions — tab 1 → StudyBuddy
+          // 3. Quick actions
           _sec('⚡ Quick Actions'),
           SliverToBoxAdapter(
-            child: _QuickActionsGrid(onTap: (tab, label) {
-              if (tab == 1) { _openStudyBuddy(); } else { _goTab(tab); _snack('Opening $label…'); }
-            }),
+            child: _QuickActionsGrid(onTap: (tab, label) => _handleTab(tab, label: label)),
           ),
-          // 4. Module grid — tab 1 → StudyBuddy
+          // 4. Module grid
           _sec('🧭 Explore Modules', showMore: false),
           SliverToBoxAdapter(
-            child: _ModuleGrid(onTap: (tab, name) {
-              if (tab == 1) { _openStudyBuddy(); } else { _goTab(tab); _snack('Opening $name…', color: _C.brandD); }
-            }),
+            child: _ModuleGrid(onTap: (tab, name) => _handleTab(tab, label: name)),
           ),
           // 5. Featured event
           SliverToBoxAdapter(
@@ -331,11 +364,8 @@ class _HomeScreenState extends State<HomeScreen> {
         selected: _navIndex,
         onTap: (i) {
           HapticFeedback.selectionClick();
-          // Tab 1 = 📚 Study → push StudyBuddyHome
-          if (i == 1) {
-            _openStudyBuddy();
-            return;
-          }
+          if (i == 1) { _openStudyBuddy(); return; }
+          if (i == 2) { _openCampusMarket(); return; }
           _goTab(i);
           if (i != 0) {
             const labels = ['Home', 'Study', 'Market', 'Housing', 'Events'];

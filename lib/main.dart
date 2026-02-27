@@ -1,106 +1,67 @@
-// ============================================================
-//  CampusBuddy — main.dart  (updated for StudyBuddy module)
+// main.dart
+// ─────────────────────────────────────────────────────────────────────────
+//  App entry point.
 //
-//  Changes from the original:
-//    1. Added:  import 'features/study_buddy/screens/study_buddy.dart';
-//    2. Uncommented the '/study-buddy' route
+//  AuthGate is the MaterialApp home. On every cold start it:
+//    1. Shows AuthSplashScreen (animated branding)
+//    2. Reads SharedPreferences for a stored auth token
+//    3a. Token found  →  HomeScreen   (user stays logged in)
+//    3b. No token     →  AuthLoginScreen
 //
-//  Everything else is identical to the original file.
-// ============================================================
+//  Logout flow (call from any screen):
+//    await authClearToken();
+//    Navigator.of(context).pushAndRemoveUntil(
+//      MaterialPageRoute(builder: (_) => const AuthGate()),
+//      (_) => false,
+//    );
+// ─────────────────────────────────────────────────────────────────────────
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_native_splash/flutter_native_splash.dart';
 
-import 'features/home/screens/home_screen.dart';
+// Auth module — single import via barrel
+import 'features/auth/auth.dart';
 
-// ── NEW: import the entire StudyBuddy module with one line ────
-import 'features/study_buddy/study_buddy.dart';
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
 
-// ─────────────────────────────────────────────────────────────
-//  ENTRY POINT
-// ─────────────────────────────────────────────────────────────
-void main() {
-  final WidgetsBinding binding = WidgetsFlutterBinding.ensureInitialized();
-  FlutterNativeSplash.preserve(widgetsBinding: binding);
+  // Lock to portrait
+  await SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+    DeviceOrientation.portraitDown,
+  ]);
 
-  SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
-      systemNavigationBarColor: Color(0xFFF5F4F0),
-      systemNavigationBarIconBrightness: Brightness.dark,
-    ),
-  );
-
-  SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  // Transparent status bar
+  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+    statusBarColor: Colors.transparent,
+    statusBarIconBrightness: Brightness.light,
+  ));
 
   runApp(const CampusBuddyApp());
 }
 
-// ─────────────────────────────────────────────────────────────
-//  ROOT APP
-// ─────────────────────────────────────────────────────────────
-class CampusBuddyApp extends StatefulWidget {
+class CampusBuddyApp extends StatelessWidget {
   const CampusBuddyApp({super.key});
-
-  @override
-  State<CampusBuddyApp> createState() => _CampusBuddyAppState();
-}
-
-class _CampusBuddyAppState extends State<CampusBuddyApp> {
-
-  @override
-  void initState() {
-    super.initState();
-    _removeSplash();
-  }
-
-  void _removeSplash() {
-    FlutterNativeSplash.remove();
-  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'CampusBuddy',
       debugShowCheckedModeBanner: false,
-
       theme: ThemeData(
-        useMaterial3: true,
-        fontFamily: 'Inter',
+        fontFamily: 'SF Pro Display', // falls back to system sans-serif
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF667EEA),
-          primary: const Color(0xFF667EEA),
-          surface: const Color(0xFFF5F4F0),
         ),
         scaffoldBackgroundColor: const Color(0xFFF5F4F0),
         appBarTheme: const AppBarTheme(
-          backgroundColor: Colors.transparent,
           elevation: 0,
-          systemOverlayStyle: SystemUiOverlayStyle(
-            statusBarColor: Colors.transparent,
-            statusBarIconBrightness: Brightness.light,
-          ),
+          scrolledUnderElevation: 0,
         ),
+        useMaterial3: true,
       ),
-
-      home: const HomeScreen(),
-
-      routes: {
-        '/home'        : (_) => const HomeScreen(),
-        '/study-buddy' : (_) => const StudyBuddyHome(),
-
-        // ── Uncomment as you create each file: ────────────────
-        // '/welcome'       : (_) => const WelcomeScreen(),
-        // '/sign-in'       : (_) => const SignInScreen(),
-        // '/sign-up'       : (_) => const SignUpScreen(),
-        // '/verification'  : (_) => const VerificationScreen(),
-        // '/reset-password': (_) => const ResetPasswordScreen(),
-        // '/market'        : (_) => const MarketHome(),
-        // '/housing'       : (_) => const HousingHome(),
-        // '/events'        : (_) => const EventHome(),
-      },
+      // ── AuthGate is the root — it decides what screen to show ──────────
+      home: const AuthGate(),
     );
   }
 }
