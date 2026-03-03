@@ -4,16 +4,31 @@
 //  Navigation wiring:
 //   ✅  Bottom nav tab 1 (📚 Study)     → pushes StudyBuddyHome
 //   ✅  Bottom nav tab 2 (🛒 Market)    → pushes CampusMarketHome
+//   ✅  Bottom nav tab 3 (🏠 Housing)   → pushes HousingHubHome
+//   ✅  Bottom nav tab 4 (🎉 Events)    → pushes EventBoardHome
 //   ✅  Module tile "StudyBuddy"        → pushes StudyBuddyHome
 //   ✅  Module tile "CampusMarket"      → pushes CampusMarketHome
+//   ✅  Module tile "HousingHub"        → pushes HousingHubHome
+//   ✅  Module tile "EventBoard"        → pushes EventBoardHome
 //   ✅  Quick-action "Find Tutor"       → pushes StudyBuddyHome
 //   ✅  Quick-action "Post Item"        → pushes CampusMarketHome
+//   ✅  Quick-action "Find Room"        → pushes HousingHubHome
+//   ✅  Quick-action "RSVP Event"       → pushes EventBoardHome
 //   ✅  Stat chip "Study Groups"        → pushes StudyBuddyHome
 //   ✅  Stat chip "New Listings"        → pushes CampusMarketHome
+//   ✅  Stat chip "Search Rooms"        → pushes HousingHubHome
+//   ✅  Stat chip "Upcoming Events"     → pushes EventBoardHome
 //   ✅  Search "Find a Tutor"           → pushes StudyBuddyHome
 //   ✅  Search "Browse Market"          → pushes CampusMarketHome
+//   ✅  Search "Search Rooms"           → pushes HousingHubHome
+//   ✅  Search "Upcoming Events"        → pushes EventBoardHome
+//   ✅  Activity feed "StudyBuddy"      → pushes StudyBuddyHome
 //   ✅  Activity feed "CampusMarket"    → pushes CampusMarketHome
-//   All other tabs still show "coming soon" snackbar as before.
+//   ✅  Activity feed "HousingHub"      → pushes HousingHubHome
+//   ✅  Activity feed "EventBoard"      → pushes EventBoardHome
+//   ✅  "Near Campus" See all →         → pushes HousingHubHome
+//   ✅  "Upcoming Events" Calendar →    → pushes EventBoardHome
+//   ✅  Housing card "Contact Agent"    → pushes HousingHubHome
 // ============================================================
 
 import 'package:flutter/material.dart';
@@ -24,6 +39,12 @@ import '../../study_buddy/study_buddy.dart';
 
 // ── CampusMarket module ───────────────────────────────────────
 import '../../campus_market/campus_market.dart';
+
+// ── Housing module ────────────────────────────────────────────
+import '../../housing_hub/housing.dart';
+
+// ── Events module ─────────────────────────────────────────────
+import '../../event_board/event.dart';
 
 // ─────────────────────────────────────────────────────────────
 //  BRAND COLOURS
@@ -204,6 +225,24 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// Opens HousingHubHome by pushing it onto the stack.
+  void _openHousingHub() {
+    HapticFeedback.mediumImpact();
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => HousingHubHome()),
+    );
+  }
+
+  /// Opens EventBoardHome by pushing it onto the stack.
+  void _openEventBoard() {
+    HapticFeedback.mediumImpact();
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => EventBoardHome()),
+    );
+  }
+
   /// Routes a navTab index to the correct screen / snackbar.
   void _handleTab(int tab, {String label = ''}) {
     switch (tab) {
@@ -212,6 +251,12 @@ class _HomeScreenState extends State<HomeScreen> {
         break;
       case 2:
         _openCampusMarket();
+        break;
+      case 3:
+        _openHousingHub();
+        break;
+      case 4:
+        _openEventBoard();
         break;
       default:
         if (label.isNotEmpty) _snack('Opening $label…');
@@ -234,14 +279,20 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _markRead(int i) {
     if (!_activities[i].unread) { _snack('Already read', color: _C.text3); return; }
-    // If activity is from CampusMarket, open market
-    if (_activities[i].time.contains('CampusMarket')) {
-      setState(() => _activities[i].unread = false);
-      _openCampusMarket();
-      return;
-    }
+    // Route each activity to its corresponding module screen
+    final time = _activities[i].time;
     setState(() => _activities[i].unread = false);
-    _snack('Marked as read ✓');
+    if (time.contains('StudyBuddy')) {
+      _openStudyBuddy();
+    } else if (time.contains('CampusMarket')) {
+      _openCampusMarket();
+    } else if (time.contains('HousingHub')) {
+      _openHousingHub();
+    } else if (time.contains('EventBoard')) {
+      _openEventBoard();
+    } else {
+      _snack('Marked as read ✓');
+    }
   }
 
   void _showNotifications() {
@@ -272,13 +323,23 @@ class _HomeScreenState extends State<HomeScreen> {
     showDialog(
       context: context,
       builder: (_) => _SearchDialog(onNavigate: (tab, label) {
-        if (tab == 1) {
-          _openStudyBuddy();
-        } else if (tab == 2) {
-          _openCampusMarket();
-        } else {
-          _goTab(tab);
-          _snack('Opening $label…');
+        // All four modules now properly push their screens
+        switch (tab) {
+          case 1:
+            _openStudyBuddy();
+            break;
+          case 2:
+            _openCampusMarket();
+            break;
+          case 3:
+            _openHousingHub();
+            break;
+          case 4:
+            _openEventBoard();
+            break;
+          default:
+            _goTab(tab);
+            _snack('Opening $label…');
         }
       }),
     );
@@ -291,8 +352,8 @@ class _HomeScreenState extends State<HomeScreen> {
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
       builder: (_) => _HousingDetailSheet(card: card, onContact: () {
-        _snack('Opening HousingHub…', color: _C.green);
-        _goTab(3);
+        // Properly pushes HousingHubHome instead of just switching tab
+        _openHousingHub();
       }),
     );
   }
@@ -341,15 +402,15 @@ class _HomeScreenState extends State<HomeScreen> {
               onDetail: () => _snack('Opening event details…', color: _C.violet),
             ),
           ),
-          // 6. Housing strip
+          // 6. Housing strip — "See all →" pushes HousingHubHome
           _sec('🏠 Near Campus', moreLabel: 'See all →',
-              onMore: () { _goTab(3); _snack('Opening HousingHub…', color: _C.green); }),
+              onMore: () => _openHousingHub()),
           SliverToBoxAdapter(
             child: _HousingStrip(onTap: _showHousingDetail),
           ),
-          // 7. Events strip
+          // 7. Events strip — "Calendar →" pushes EventBoardHome
           _sec('🎉 Upcoming Events', moreLabel: 'Calendar →',
-              onMore: () { _goTab(4); _snack('Opening Events calendar…', color: _C.violet); }),
+              onMore: () => _openEventBoard()),
           SliverToBoxAdapter(child: _EventsStrip()),
           // 8. Activity feed
           _sec('⚡ Recent Activity', moreLabel: 'See all →',
@@ -364,13 +425,12 @@ class _HomeScreenState extends State<HomeScreen> {
         selected: _navIndex,
         onTap: (i) {
           HapticFeedback.selectionClick();
-          if (i == 1) { _openStudyBuddy(); return; }
+          // All four module tabs now properly push their screens
+          if (i == 1) { _openStudyBuddy();   return; }
           if (i == 2) { _openCampusMarket(); return; }
-          _goTab(i);
-          if (i != 0) {
-            const labels = ['Home', 'Study', 'Market', 'Housing', 'Events'];
-            _snack('${labels[i]} — coming soon…');
-          }
+          if (i == 3) { _openHousingHub();   return; }
+          if (i == 4) { _openEventBoard();   return; }
+          _goTab(i); // i == 0 → Home tab, just switch state
         },
       ),
     );
@@ -1124,6 +1184,7 @@ class _SearchDialog extends StatefulWidget {
 
 class _SearchDialogState extends State<_SearchDialog> {
   final _ctrl = TextEditingController();
+  // All four modules are included as search quick-jump suggestions
   final _suggestions = [
     (emoji: '📚', label: 'Find a Tutor',    tab: 1),
     (emoji: '🛒', label: 'Browse Market',   tab: 2),
