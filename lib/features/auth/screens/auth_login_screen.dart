@@ -20,12 +20,19 @@ class _AuthLoginScreenState extends State<AuthLoginScreen> {
   bool _loading       = false;
 
   @override
-  void dispose() { _emailCtrl.dispose(); _passwordCtrl.dispose(); super.dispose(); }
+  void dispose() {
+    _emailCtrl.dispose();
+    _passwordCtrl.dispose();
+    super.dispose();
+  }
 
   Future<void> _onLogin() async {
     final email    = _emailCtrl.text.trim();
     final password = _passwordCtrl.text;
-    if (email.isEmpty || password.isEmpty) { _snack('Please fill in all fields.'); return; }
+    if (email.isEmpty || password.isEmpty) {
+      _snack('Please fill in all fields.');
+      return;
+    }
 
     setState(() => _loading = true);
 
@@ -61,7 +68,7 @@ class _AuthLoginScreenState extends State<AuthLoginScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Wave header
+            // ── Wave header ──────────────────────────────────
             AUWaveHeader(
               height: 240,
               child: SafeArea(
@@ -73,7 +80,7 @@ class _AuthLoginScreenState extends State<AuthLoginScreen> {
               ),
             ),
 
-            // Form
+            // ── Form ─────────────────────────────────────────
             Padding(
               padding: const EdgeInsets.fromLTRB(28, 32, 28, 40),
               child: Column(
@@ -97,20 +104,22 @@ class _AuthLoginScreenState extends State<AuthLoginScreen> {
                     isPassword: true,
                   ),
 
-                  // Remember me + Forgot
+                  // ── Remember me + Forgot Password ──────────
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
+                      // Remember me checkbox
                       GestureDetector(
                         onTap: () => setState(() => _rememberMe = !_rememberMe),
                         child: Row(
                           children: [
                             AnimatedContainer(
                               duration: const Duration(milliseconds: 200),
-                              width: 18, height: 18,
+                              width: 18,
+                              height: 18,
                               decoration: BoxDecoration(
                                 color: _rememberMe ? AUColors.brand : Colors.transparent,
-                                borderRadius: BorderRadius.circular(5),
+                                borderRadius: BorderRadius.circular(4),
                                 border: Border.all(color: AUColors.brand),
                               ),
                               child: _rememberMe
@@ -118,28 +127,47 @@ class _AuthLoginScreenState extends State<AuthLoginScreen> {
                                   : null,
                             ),
                             const SizedBox(width: 8),
-                            Text('Remember Me', style: TextStyle(fontSize: 12, color: AUColors.text2)),
+                            Text('Remember Me',
+                                style: TextStyle(fontSize: 12, color: AUColors.text2)),
                           ],
                         ),
                       ),
+
+                      // Forgot Password — brand color, navigates to reset
                       GestureDetector(
-                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => AuthResetScreen())),
-                        child: Text('Forgot Password?',
-                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AUColors.brand)),
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => AuthResetScreen()),
+                        ),
+                        child: Text(
+                          'Forgot Password?',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: AUColors.brand,
+                          ),
+                        ),
                       ),
                     ],
                   ),
 
                   const SizedBox(height: 32),
 
-                  AUPrimaryButton(label: 'Login', loading: _loading, onTap: _onLogin),
+                  AUPrimaryButton(
+                    label: 'Login',
+                    loading: _loading,
+                    onTap: _onLogin,
+                  ),
 
                   const SizedBox(height: 24),
 
                   AULinkRow(
                     text: "Don't have an account?",
                     linkText: 'Sign up',
-                    onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => AuthSignupScreen())),
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => AuthSignupScreen()),
+                    ),
                   ),
                 ],
               ),

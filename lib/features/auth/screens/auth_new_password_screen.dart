@@ -18,18 +18,34 @@ class _AuthNewPasswordScreenState extends State<AuthNewPasswordScreen> {
   bool _success          = false;
 
   @override
-  void dispose() { _newPassCtrl.dispose(); _confirmPassCtrl.dispose(); super.dispose(); }
+  void dispose() {
+    _newPassCtrl.dispose();
+    _confirmPassCtrl.dispose();
+    super.dispose();
+  }
 
   Future<void> _onReset() async {
     final pass    = _newPassCtrl.text;
     final confirm = _confirmPassCtrl.text;
-    if (pass.isEmpty || confirm.isEmpty) { _snack('Please fill in both fields.'); return; }
-    if (pass != confirm)                 { _snack('Passwords do not match.'); return; }
-    if (pass.length < 8)                 { _snack('Password must be at least 8 characters.'); return; }
+
+    if (pass.isEmpty || confirm.isEmpty) {
+      _snack('Please fill in both fields.');
+      return;
+    }
+    if (pass != confirm) {
+      _snack('Passwords do not match.');
+      return;
+    }
+    if (pass.length < 8) {
+      _snack('Password must be at least 8 characters.');
+      return;
+    }
 
     setState(() => _loading = true);
+
     // TODO: call your reset-password API
     await Future.delayed(const Duration(milliseconds: 1000));
+
     if (!mounted) return;
     setState(() { _loading = false; _success = true; });
   }
@@ -53,6 +69,7 @@ class _AuthNewPasswordScreenState extends State<AuthNewPasswordScreen> {
     );
   }
 
+  // ── Form: enter new password ──────────────────────────────
   Widget _buildForm(BuildContext context) {
     return SingleChildScrollView(
       child: Column(
@@ -74,15 +91,37 @@ class _AuthNewPasswordScreenState extends State<AuthNewPasswordScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 AUScreenTitle('Create new\npassword'),
+
                 Text(
-                  'Your new password must be different from the previous password.',
+                  'Your new password must be different\nfrom the previous password.',
                   style: TextStyle(fontSize: 13, color: AUColors.text2, height: 1.65),
                 ),
+
                 const SizedBox(height: 28),
-                AUInputField(label: 'New Password',     hint: 'Enter new password',    controller: _newPassCtrl,     iconEmoji: '🔒', isPassword: true),
-                AUInputField(label: 'Confirm Password', hint: 'Confirm new password',  controller: _confirmPassCtrl, iconEmoji: '🔒', isPassword: true),
+
+                AUInputField(
+                  label: 'New Password',
+                  hint: 'Enter new password',
+                  controller: _newPassCtrl,
+                  iconEmoji: '🔒',
+                  isPassword: true,
+                ),
+
+                AUInputField(
+                  label: 'Confirm Password',
+                  hint: 'Confirm new password',
+                  controller: _confirmPassCtrl,
+                  iconEmoji: '🔒',
+                  isPassword: true,
+                ),
+
                 const SizedBox(height: 8),
-                AUPrimaryButton(label: 'Reset Password', loading: _loading, onTap: _onReset),
+
+                AUPrimaryButton(
+                  label: 'Reset Password',
+                  loading: _loading,
+                  onTap: _onReset,
+                ),
               ],
             ),
           ),
@@ -91,6 +130,7 @@ class _AuthNewPasswordScreenState extends State<AuthNewPasswordScreen> {
     );
   }
 
+  // ── Success: password reset confirmed ────────────────────
   Widget _buildSuccess(BuildContext context) {
     return SafeArea(
       child: Padding(
@@ -98,32 +138,55 @@ class _AuthNewPasswordScreenState extends State<AuthNewPasswordScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            // Green checkmark circle
             Container(
-              width: 96, height: 96,
+              width: 96,
+              height: 96,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 gradient: LinearGradient(
                   colors: [AUColors.brand, AUColors.brandDeep],
-                  begin: Alignment.topLeft, end: Alignment.bottomRight,
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
                 ),
               ),
-              child: const Center(child: Icon(Icons.check, color: Colors.white, size: 44)),
+              child: const Center(
+                child: Icon(Icons.check, color: Colors.white, size: 44),
+              ),
             ),
+
             const SizedBox(height: 28),
-            Text('Password Reset!',
-                style: TextStyle(fontSize: 26, fontWeight: FontWeight.w900, color: AUColors.text, letterSpacing: -0.4)),
+
+            Text(
+              'Password Reset!',
+              style: TextStyle(
+                fontSize: 26,
+                fontWeight: FontWeight.w900,
+                color: AUColors.text,
+                letterSpacing: -0.4,
+              ),
+            ),
+
             const SizedBox(height: 10),
+
             Container(
               width: 48, height: 3,
-              decoration: BoxDecoration(color: AUColors.brand, borderRadius: BorderRadius.circular(2)),
+              decoration: BoxDecoration(
+                color: AUColors.brand,
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
+
             const SizedBox(height: 20),
+
             Text(
               'Your password has been successfully reset. You can now sign in with your new password.',
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 13, color: AUColors.text2, height: 1.65),
             ),
+
             const SizedBox(height: 36),
+
             AUPrimaryButton(
               label: 'Back to Sign In',
               onTap: () => Navigator.of(context).pushAndRemoveUntil(

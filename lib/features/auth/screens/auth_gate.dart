@@ -1,13 +1,11 @@
 // auth module — auth_gate.dart
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-import 'auth_splash_screen.dart';
 import 'auth_login_screen.dart';
 import '../../home/screens/home_screen.dart';
 
 // ─────────────────────────────────────────────────────────────
-//  Token helpers — call from anywhere in the app
+//  Token helpers
 // ─────────────────────────────────────────────────────────────
 const _kTokenKey = 'auth_token';
 
@@ -27,7 +25,7 @@ Future<void> authClearToken() async {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  AuthGate — cold-start router
+//  AuthGate — no splash, goes directly to Login or Home
 // ─────────────────────────────────────────────────────────────
 class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
@@ -44,13 +42,8 @@ class _AuthGateState extends State<AuthGate> {
   }
 
   Future<void> _decideRoute() async {
-    // Keep splash visible for minimum duration
-    await Future.delayed(const Duration(milliseconds: 2200));
-    if (!mounted) return;
-
     final token = await authReadToken();
     if (!mounted) return;
-
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
         builder: (_) => (token != null && token.isNotEmpty)
@@ -60,6 +53,9 @@ class _AuthGateState extends State<AuthGate> {
     );
   }
 
+  // Blank screen shown for the instant it takes to read SharedPreferences
   @override
-  Widget build(BuildContext context) => const AuthSplashScreen();
+  Widget build(BuildContext context) {
+    return const Scaffold(backgroundColor: Color(0xFFF5F4F0));
+  }
 }

@@ -15,19 +15,30 @@ class _AuthResetScreenState extends State<AuthResetScreen> {
   bool _loading    = false;
 
   @override
-  void dispose() { _emailCtrl.dispose(); super.dispose(); }
+  void dispose() {
+    _emailCtrl.dispose();
+    super.dispose();
+  }
 
   Future<void> _onSend() async {
     final email = _emailCtrl.text.trim();
-    if (email.isEmpty) { _snack('Please enter your email address.'); return; }
+    if (email.isEmpty) {
+      _snack('Please enter your email address.');
+      return;
+    }
 
     setState(() => _loading = true);
+
     // TODO: call your password-reset API
     await Future.delayed(const Duration(milliseconds: 1000));
+
     if (!mounted) return;
     setState(() => _loading = false);
 
-    Navigator.push(context, MaterialPageRoute(builder: (_) => AuthCheckMailScreen(email: email)));
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => AuthCheckMailScreen(email: email)),
+    );
   }
 
   void _snack(String msg) {
@@ -49,6 +60,7 @@ class _AuthResetScreenState extends State<AuthResetScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // ── Wave header ──────────────────────────────────
             AUWaveHeader(
               height: 200,
               child: SafeArea(
@@ -60,6 +72,7 @@ class _AuthResetScreenState extends State<AuthResetScreen> {
               ),
             ),
 
+            // ── Form ─────────────────────────────────────────
             Padding(
               padding: const EdgeInsets.fromLTRB(28, 32, 28, 40),
               child: Column(
@@ -69,7 +82,11 @@ class _AuthResetScreenState extends State<AuthResetScreen> {
 
                   Text(
                     'Enter the email linked to your CampusBuddy account.\n\nWe\'ll send you a link to reset your password.',
-                    style: TextStyle(fontSize: 13, color: AUColors.text2, height: 1.65),
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: AUColors.text2,
+                      height: 1.65,
+                    ),
                   ),
 
                   const SizedBox(height: 28),
@@ -84,7 +101,20 @@ class _AuthResetScreenState extends State<AuthResetScreen> {
 
                   const SizedBox(height: 8),
 
-                  AUPrimaryButton(label: 'Send Instructions', loading: _loading, onTap: _onSend),
+                  AUPrimaryButton(
+                    label: 'Send Instructions',
+                    loading: _loading,
+                    onTap: _onSend,
+                  ),
+
+                  const SizedBox(height: 24),
+
+                  // Back to login link
+                  AULinkRow(
+                    text: 'Remember your password?',
+                    linkText: 'Sign in',
+                    onTap: () => Navigator.pop(context),
+                  ),
                 ],
               ),
             ),

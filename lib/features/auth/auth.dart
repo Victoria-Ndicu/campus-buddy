@@ -3,7 +3,6 @@
 //   import 'features/auth/auth.dart';
 
 export 'screens/auth_gate.dart';
-export 'screens/auth_splash_screen.dart';
 export 'screens/auth_login_screen.dart';
 export 'screens/auth_signup_screen.dart';
 export 'screens/auth_verify_screen.dart';
