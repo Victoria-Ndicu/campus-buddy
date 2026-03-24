@@ -1,5 +1,7 @@
 // auth module — auth_signup_screen.dart
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import '../widgets/au_widgets.dart';
 import 'auth_verify_screen.dart';
 
@@ -16,6 +18,8 @@ class _AuthSignupScreenState extends State<AuthSignupScreen> {
   final _passwordCtrl = TextEditingController();
   final _confirmCtrl  = TextEditingController();
   bool _loading       = false;
+
+  static const _baseUrl = 'https://campusbuddybackend-production.up.railway.app';
 
   @override
   void dispose() {
@@ -35,12 +39,39 @@ class _AuthSignupScreenState extends State<AuthSignupScreen> {
     if (password.length < 8) { _snack('Password must be at least 8 characters.'); return; }
 
     setState(() => _loading = true);
-    // TODO: replace with your real signup API call
-    await Future.delayed(const Duration(milliseconds: 1000));
-    if (!mounted) return;
-    setState(() => _loading = false);
 
-    Navigator.push(context, MaterialPageRoute(builder: (_) => AuthVerifyScreen(email: email)));
+    try {
+      final response = await http.post(
+        Uri.parse('$_baseUrl/api/v1/auth/register'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'email':    email,
+          'phone':    phone,
+          'password': password,
+        }),
+      );
+
+      if (!mounted) return;
+
+      final data = jsonDecode(response.body);
+
+      if (response.statusCode == 201) {
+        // Registration successful — go to OTP verification
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => AuthVerifyScreen(email: email)),
+        );
+      } else {
+        // Show error from backend
+        final message = data['message'] ?? data['detail'] ?? 'Registration failed. Please try again.';
+        _snack(message);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      _snack('Network error. Please check your connection.');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   void _snack(String msg) {
