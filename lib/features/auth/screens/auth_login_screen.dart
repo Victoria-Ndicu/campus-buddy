@@ -5,10 +5,8 @@ import 'package:http/http.dart' as http;
 import '../widgets/au_widgets.dart';
 import 'auth_signup_screen.dart';
 import 'auth_reset_screen.dart';
-import 'auth_gate.dart';
 import '../../home/screens/home_screen.dart';
-
-const _baseUrl = 'https://campusbuddybackend-production.up.railway.app';
+import '../../../core/api_client.dart';
 
 class AuthLoginScreen extends StatefulWidget {
   const AuthLoginScreen({super.key});
@@ -22,6 +20,8 @@ class _AuthLoginScreenState extends State<AuthLoginScreen> {
   final _passwordCtrl = TextEditingController();
   bool _rememberMe    = true;
   bool _loading       = false;
+
+  static const _baseUrl = 'https://campusbuddybackend-production.up.railway.app';
 
   @override
   void dispose() {
@@ -46,18 +46,20 @@ class _AuthLoginScreenState extends State<AuthLoginScreen> {
         Uri.parse('$_baseUrl/api/v1/auth/login/'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'email': email,
+          'email':    email,
           'password': password,
         }),
       );
 
       if (!mounted) return;
-      final data = jsonDecode(response.body);
+
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
 
       if (response.statusCode == 200) {
-        // ✅ Login success — backend returns { accessToken, refreshToken, user }
-        final accessToken = data['accessToken'] ?? '';
-        await authSaveToken(accessToken);
+        final accessToken  = data['accessToken']  as String? ?? '';
+        final refreshToken = data['refreshToken'] as String? ?? '';
+
+        await ApiClient.saveTokens(accessToken, refreshToken);
 
         if (!mounted) return;
         Navigator.of(context).pushAndRemoveUntil(
@@ -65,24 +67,19 @@ class _AuthLoginScreenState extends State<AuthLoginScreen> {
           (_) => false,
         );
       } else {
-        // ❌ Login failed — AppError returns { code, message }
-        // Handle specific error codes from services.login_user:
-        //   INVALID_CREDENTIALS → wrong email or password
-        //   EMAIL_NOT_VERIFIED  → account exists but OTP not done yet
-        final code    = data['code']    ?? '';
-        final message = data['message'] ?? data['detail'] ?? 'Login failed. Please try again.';
+        final code    = data['code']    as String? ?? '';
+        final message = data['message'] as String?
+            ?? data['detail'] as String?
+            ?? 'Login failed. Please try again.';
 
         if (code == 'EMAIL_NOT_VERIFIED') {
           _snack('Please verify your email before logging in.');
-          // Optionally navigate back to verify screen:
-          // Navigator.push(context, MaterialPageRoute(
-          //   builder: (_) => AuthVerifyScreen(email: email)));
         } else {
           _snack(message);
         }
       }
     } catch (e) {
-      _snack('Network error. Please check your connection.');
+      if (mounted) _snack('Network error. Please check your connection.');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
