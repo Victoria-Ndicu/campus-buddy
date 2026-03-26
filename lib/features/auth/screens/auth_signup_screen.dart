@@ -42,7 +42,7 @@ class _AuthSignupScreenState extends State<AuthSignupScreen> {
 
     try {
       final response = await http.post(
-        Uri.parse('$_baseUrl/api/v1/auth/register'),
+        Uri.parse('$_baseUrl/api/v1/auth/register/'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'email':    email,

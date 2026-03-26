@@ -1,15 +1,213 @@
 // ============================================================
-//  StudyBuddy — sb_groups_screen.dart
+//  StudyBuddy — sb_groups_screen.dart  (API-connected)
 //
-//  Screen stack:
-//    SBGroupsScreen
-//      ├─ SBGroupDetailScreen   (tap group card)
-//      └─ SBCreateGroupScreen   (tap + in app bar)
+//  GET  /api/study/groups/              → list groups
+//  GET  /api/study/groups/?subject=     → filtered groups
+//  POST /api/study/groups/              → create group
+//  POST /api/study/groups/<id>/join/    → join group
+//  POST /api/study/groups/<id>/leave/   → leave group
 // ============================================================
 
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+
 import '../models/sb_constants.dart';
 import '../widgets/sb_widgets.dart';
+
+// ── API config ────────────────────────────────────────────────
+const String _kBaseUrl = 'https://campusbuddybackend-production.up.railway.app/api/study';
+
+Map<String, String> get _headers => {
+      'Content-Type': 'application/json',
+      // 'Authorization': 'Bearer ${AuthService.instance.token}',
+    };
+
+// ── Group model ───────────────────────────────────────────────
+class GroupModel {
+  final String id;
+  final String name;
+  final String course;
+  final String description;
+  final String schedule;
+  final String location;
+  final int members;
+  final int maxMembers;
+  final bool isJoined;
+  final String emoji;
+  final List<MemberModel> memberList;
+  final List<SessionModel> sessions;
+  final int fileCount;
+
+  const GroupModel({
+    required this.id,
+    required this.name,
+    required this.course,
+    required this.description,
+    required this.schedule,
+    required this.location,
+    required this.members,
+    required this.maxMembers,
+    required this.isJoined,
+    required this.emoji,
+    required this.memberList,
+    required this.sessions,
+    required this.fileCount,
+  });
+
+  static String _emojiForCourse(String course) {
+    final c = course.toLowerCase();
+    if (c.contains('math') || c.contains('calc')) return '📐';
+    if (c.contains('cs') || c.contains('computer') || c.contains('algo')) return '💻';
+    if (c.contains('chem')) return '⚗️';
+    if (c.contains('phys')) return '🔭';
+    if (c.contains('bio')) return '🧬';
+    if (c.contains('econ') || c.contains('finance')) return '📊';
+    if (c.contains('eng') || c.contains('lit')) return '📝';
+    return '📚';
+  }
+
+  factory GroupModel.fromJson(Map<String, dynamic> json) {
+    final memberList = (json['members'] as List? ?? [])
+        .map((m) => MemberModel.fromJson(m as Map<String, dynamic>))
+        .toList();
+
+    final sessions = (json['sessions'] as List? ?? [])
+        .map((s) => SessionModel.fromJson(s as Map<String, dynamic>))
+        .toList();
+
+    final course = json['course'] as String? ??
+        json['course_code'] as String? ??
+        json['subject'] as String? ?? '';
+
+    return GroupModel(
+      id:          json['id']?.toString() ?? '',
+      name:        json['name'] as String? ?? 'Study Group',
+      course:      course,
+      description: json['description'] as String? ?? '',
+      schedule:    json['schedule'] as String? ?? json['meeting_time'] as String? ?? '—',
+      location:    json['location'] as String? ?? json['meeting_place'] as String? ?? '—',
+      members:     (json['member_count'] ?? json['members_count'] ?? memberList.length) as int,
+      maxMembers:  (json['max_members'] ?? json['max_size'] ?? 20) as int,
+      isJoined:    json['is_member'] as bool? ?? json['is_joined'] as bool? ?? false,
+      emoji:       _emojiForCourse(course),
+      memberList:  memberList,
+      sessions:    sessions,
+      fileCount:   (json['file_count'] ?? json['files_count'] ?? 0) as int,
+    );
+  }
+}
+
+class MemberModel {
+  final String name;
+  final String degree;
+  final bool isOnline;
+  final bool isAdmin;
+  final String emoji;
+
+  const MemberModel({
+    required this.name,
+    required this.degree,
+    required this.isOnline,
+    required this.isAdmin,
+    required this.emoji,
+  });
+
+  factory MemberModel.fromJson(Map<String, dynamic> json) {
+    return MemberModel(
+      name:     json['name'] as String? ?? json['full_name'] as String? ??
+                json['user']?['full_name'] as String? ?? 'Member',
+      degree:   json['degree'] as String? ?? json['program'] as String? ?? '',
+      isOnline: json['is_online'] as bool? ?? false,
+      isAdmin:  json['is_admin'] as bool? ?? json['role'] == 'admin',
+      emoji:    json['emoji'] as String? ?? '👤',
+    );
+  }
+}
+
+class SessionModel {
+  final String dayLabel;
+  final String dateNum;
+  final String title;
+  final String subtitle;
+
+  const SessionModel({
+    required this.dayLabel,
+    required this.dateNum,
+    required this.title,
+    required this.subtitle,
+  });
+
+  factory SessionModel.fromJson(Map<String, dynamic> json) {
+    DateTime? dt;
+    try {
+      if (json['scheduled_at'] != null) {
+        dt = DateTime.parse(json['scheduled_at'] as String).toLocal();
+      }
+    } catch (_) {}
+
+    const days = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+    final dayLabel = dt != null ? days[dt.weekday - 1] : '—';
+    final dateNum  = dt != null ? '${dt.day}' : '—';
+    final timeStr  = dt != null
+        ? '${dt.hour > 12 ? dt.hour - 12 : dt.hour}:${dt.minute.toString().padLeft(2, '0')} ${dt.hour >= 12 ? 'PM' : 'AM'}'
+        : '';
+
+    final location = json['location'] as String? ?? json['meeting_place'] as String? ?? '';
+    final subtitle = [if (timeStr.isNotEmpty) timeStr, if (location.isNotEmpty) location]
+        .join(' · ');
+
+    return SessionModel(
+      dayLabel: dayLabel,
+      dateNum:  dateNum,
+      title:    json['title'] as String? ?? json['topic'] as String? ?? 'Study Session',
+      subtitle: subtitle,
+    );
+  }
+}
+
+// ── API service ───────────────────────────────────────────────
+class _GroupsApi {
+  static Future<List<GroupModel>> fetchGroups({String? subject, String? search}) async {
+    final params = <String, String>{};
+    if (subject != null && subject.isNotEmpty) params['subject'] = subject;
+    if (search  != null && search.isNotEmpty)  params['search']  = search;
+
+    final uri = Uri.parse('$_kBaseUrl/groups/').replace(queryParameters: params);
+    final res = await http.get(uri, headers: _headers).timeout(const Duration(seconds: 10));
+    if (res.statusCode != 200) throw Exception('Failed to load groups (${res.statusCode})');
+
+    final body = jsonDecode(res.body) as Map<String, dynamic>;
+    final results = (body['results'] ?? body) as List<dynamic>;
+    return results.map((e) => GroupModel.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
+  static Future<void> joinGroup(String id) async {
+    final res = await http
+        .post(Uri.parse('$_kBaseUrl/groups/$id/join/'), headers: _headers)
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode != 200 && res.statusCode != 201) {
+      throw Exception('Join failed (${res.statusCode})');
+    }
+  }
+
+  static Future<void> leaveGroup(String id) async {
+    final res = await http
+        .post(Uri.parse('$_kBaseUrl/groups/$id/leave/'), headers: _headers)
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode != 200 && res.statusCode != 204) {
+      throw Exception('Leave failed (${res.statusCode})');
+    }
+  }
+
+  static Future<void> createGroup(Map<String, dynamic> payload) async {
+    final res = await http
+        .post(Uri.parse('$_kBaseUrl/groups/'),
+            headers: _headers, body: jsonEncode(payload))
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode != 201) throw Exception('Create failed (${res.statusCode})');
+  }
+}
 
 // ─────────────────────────────────────────────────────────────
 //  1. Browse Study Groups
@@ -24,6 +222,56 @@ class SBGroupsScreen extends StatefulWidget {
 class _SBGroupsScreenState extends State<SBGroupsScreen> {
   int _filter = 0;
   final _filters = ['All', 'My Groups', 'Nearby', 'Online', 'Open'];
+
+  String _searchQuery = '';
+  late Future<List<GroupModel>> _groupsFuture;
+
+  // Track optimistic join/leave state: groupId → isJoined
+  final Map<String, bool> _joinedOverride = {};
+  // Track in-progress join/leave
+  final Set<String> _loadingJoin = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  void _load() {
+    final subject = _filter == 0 ? null : _filters[_filter];
+    _groupsFuture = _GroupsApi.fetchGroups(
+      subject: _searchQuery.isEmpty ? subject : null,
+      search:  _searchQuery.isEmpty ? null : _searchQuery,
+    );
+  }
+
+  bool _isJoined(GroupModel g) => _joinedOverride[g.id] ?? g.isJoined;
+
+  Future<void> _toggleJoin(GroupModel g) async {
+    final joining = !_isJoined(g);
+    setState(() {
+      _joinedOverride[g.id] = joining;
+      _loadingJoin.add(g.id);
+    });
+    try {
+      if (joining) {
+        await _GroupsApi.joinGroup(g.id);
+      } else {
+        await _GroupsApi.leaveGroup(g.id);
+      }
+    } catch (e) {
+      // Revert optimistic update on failure
+      setState(() => _joinedOverride[g.id] = !joining);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(joining ? 'Could not join group' : 'Could not leave group'),
+          backgroundColor: Colors.red,
+        ));
+      }
+    } finally {
+      setState(() => _loadingJoin.remove(g.id));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -40,230 +288,368 @@ class _SBGroupsScreenState extends State<SBGroupsScreen> {
             style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: SBColors.text)),
         actions: [
           GestureDetector(
-            onTap: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const SBCreateGroupScreen())),
+            onTap: () async {
+              await Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const SBCreateGroupScreen()));
+              // Reload after returning from create screen
+              setState(() => _load());
+            },
             child: Container(
               margin: const EdgeInsets.only(right: 16),
               width: 36, height: 36,
-              decoration: BoxDecoration(color: SBColors.brand, borderRadius: BorderRadius.circular(10)),
+              decoration: BoxDecoration(
+                  color: SBColors.brand, borderRadius: BorderRadius.circular(10)),
               child: const Center(
                 child: Text('+',
-                    style: TextStyle(fontSize: 22, color: Colors.white, fontWeight: FontWeight.w700)),
+                    style: TextStyle(
+                        fontSize: 22, color: Colors.white, fontWeight: FontWeight.w700)),
               ),
             ),
           ),
         ],
       ),
-      body: CustomScrollView(
-        slivers: [
-          SliverToBoxAdapter(child: SBSearchBar(hint: 'Search groups by course or topic...')),
-          SliverToBoxAdapter(
-            child: SizedBox(
-              height: 46,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                itemCount: _filters.length,
-                separatorBuilder: (_, __) => const SizedBox(width: 8),
-                itemBuilder: (_, i) => SBChip(
-                  label: _filters[i],
-                  active: _filter == i,
-                  onTap: () => setState(() => _filter = i),
-                ),
+      body: RefreshIndicator(
+        onRefresh: () async => setState(() => _load()),
+        color: SBColors.brand,
+        child: CustomScrollView(
+          slivers: [
+            // ── Search ───────────────────────────────────
+            SliverToBoxAdapter(
+              child: SBSearchBar(
+                hint: 'Search groups by course or topic...',
+                onChanged: (q) => setState(() {
+                  _searchQuery = q;
+                  _load();
+                }),
               ),
             ),
-          ),
-          // Hero banner
-          SliverToBoxAdapter(
-            child: Container(
-              margin: const EdgeInsets.all(16),
-              padding: const EdgeInsets.all(18),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                    colors: [Color(0xFF3ECF8E), Color(0xFF0D9488)],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('Join 42 Active Groups',
-                    style: TextStyle(
-                        fontSize: 16, fontWeight: FontWeight.w700, color: Colors.white)),
-                const SizedBox(height: 4),
-                Text('Connect with peers studying the same courses right now',
-                    style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.85))),
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.white.withOpacity(0.4)),
+
+            // ── Filter chips ──────────────────────────────
+            SliverToBoxAdapter(
+              child: SizedBox(
+                height: 46,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  itemCount: _filters.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  itemBuilder: (_, i) => SBChip(
+                    label: _filters[i],
+                    active: _filter == i,
+                    onTap: () => setState(() {
+                      _filter = i;
+                      _load();
+                    }),
                   ),
-                  child: const Text('Explore All →',
-                      style: TextStyle(
-                          fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white)),
                 ),
-              ]),
+              ),
             ),
-          ),
-          SliverToBoxAdapter(
-            child: SBSectionLabel(title: 'Recommended for You', action: 'See all'),
-          ),
-          SliverList(
-            delegate: SliverChildListDelegate([
-              _GroupCard(
-                emoji: '📐',
-                name: 'MATH201 Study Squad',
-                course: 'MATH 201',
-                description: 'Focused on Calculus II exam prep. Working through past papers together every week.',
-                schedule: 'Tue & Thu · 4pm',
-                location: 'Library Room 3',
-                members: 8, maxMembers: 12, isJoined: true,
-                onTap: () => Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => const SBGroupDetailScreen())),
+
+            // ── Content ───────────────────────────────────
+            SliverToBoxAdapter(
+              child: FutureBuilder<List<GroupModel>>(
+                future: _groupsFuture,
+                builder: (context, snap) {
+                  // Loading
+                  if (snap.connectionState == ConnectionState.waiting) {
+                    return Column(children: [
+                      _heroBanner(42),
+                      SBSectionLabel(title: 'Loading groups...', action: 'See all'),
+                      ..._shimmerCards(),
+                    ]);
+                  }
+
+                  // Error
+                  if (snap.hasError) {
+                    return Column(children: [
+                      _heroBanner(0),
+                      _ErrorState(onRetry: () => setState(() => _load())),
+                    ]);
+                  }
+
+                  final groups = snap.data ?? [];
+
+                  return Column(children: [
+                    // Hero banner with live count
+                    _heroBanner(groups.length),
+
+                    if (groups.isEmpty)
+                      const _EmptyState()
+                    else ...[
+                      SBSectionLabel(
+                          title: 'Recommended for You (${groups.length})',
+                          action: 'See all'),
+                      ...groups.map((g) => _GroupCard(
+                            group: g,
+                            isJoined: _isJoined(g),
+                            isLoading: _loadingJoin.contains(g.id),
+                            onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                    builder: (_) => SBGroupDetailScreen(group: g))),
+                            onJoinToggle: () => _toggleJoin(g),
+                          )),
+                      const SizedBox(height: 24),
+                    ],
+                  ]);
+                },
               ),
-              _GroupCard(
-                emoji: '💻',
-                name: 'CS301 Algorithms Hub',
-                course: 'CS 301',
-                description: 'Algorithm analysis and design. LeetCode sessions & graph theory deep dives.',
-                schedule: 'Mon & Wed · 5pm',
-                location: 'Online – Discord',
-                members: 11, maxMembers: 15, isJoined: false,
-                onTap: () {},
-              ),
-              _GroupCard(
-                emoji: '⚗️',
-                name: 'Organic Chemistry Crew',
-                course: 'CHEM 202',
-                description: 'Mastering organic synthesis mechanisms together. Weekly lab discussion sessions.',
-                schedule: 'Fri · 2pm',
-                location: 'Science Block B',
-                members: 6, maxMembers: 10, isJoined: false,
-                onTap: () {},
-              ),
-              const SizedBox(height: 24),
-            ]),
-          ),
-        ],
+            ),
+          ],
+        ),
       ),
     );
   }
+
+  Widget _heroBanner(int count) => Container(
+        margin: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+              colors: [Color(0xFF3ECF8E), Color(0xFF0D9488)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(
+            count > 0 ? 'Join $count Active Groups' : 'Study Groups',
+            style: const TextStyle(
+                fontSize: 16, fontWeight: FontWeight.w700, color: Colors.white),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Connect with peers studying the same courses right now',
+            style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.85)),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.white.withOpacity(0.4)),
+            ),
+            child: const Text('Explore All →',
+                style: TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white)),
+          ),
+        ]),
+      );
+
+  List<Widget> _shimmerCards() => List.generate(
+        3,
+        (_) => Container(
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+          padding: const EdgeInsets.all(14),
+          decoration: SBTheme.card,
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Container(width: 160, height: 14,
+                  decoration: BoxDecoration(color: SBColors.border,
+                      borderRadius: BorderRadius.circular(7))),
+              Container(width: 60, height: 22,
+                  decoration: BoxDecoration(color: SBColors.border,
+                      borderRadius: BorderRadius.circular(8))),
+            ]),
+            const SizedBox(height: 8),
+            Container(width: double.infinity, height: 10,
+                decoration: BoxDecoration(color: SBColors.border,
+                    borderRadius: BorderRadius.circular(5))),
+            const SizedBox(height: 6),
+            Container(width: 220, height: 10,
+                decoration: BoxDecoration(color: SBColors.border,
+                    borderRadius: BorderRadius.circular(5))),
+          ]),
+        ),
+      );
 }
 
+// ── Group card ────────────────────────────────────────────────
 class _GroupCard extends StatelessWidget {
-  final String emoji, name, course, description, schedule, location;
-  final int members, maxMembers;
+  final GroupModel group;
   final bool isJoined;
+  final bool isLoading;
   final VoidCallback onTap;
+  final VoidCallback onJoinToggle;
 
   const _GroupCard({
-    required this.emoji, required this.name, required this.course,
-    required this.description, required this.schedule, required this.location,
-    required this.members, required this.maxMembers,
-    required this.isJoined, required this.onTap,
+    required this.group,
+    required this.isJoined,
+    required this.isLoading,
+    required this.onTap,
+    required this.onJoinToggle,
   });
 
   @override
   Widget build(BuildContext context) => GestureDetector(
-    onTap: onTap,
-    child: Container(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-      padding: const EdgeInsets.all(14),
-      decoration: SBTheme.card,
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          Expanded(
-            child: Text('$emoji  $name',
-                style: const TextStyle(
-                    fontSize: 14, fontWeight: FontWeight.w600, color: SBColors.text)),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-            decoration: BoxDecoration(
-                color: SBColors.brandPale, borderRadius: BorderRadius.circular(8)),
-            child: Text(course,
-                style: const TextStyle(
-                    fontSize: 10, fontWeight: FontWeight.w700, color: SBColors.brand)),
-          ),
-        ]),
-        const SizedBox(height: 6),
-        Text(description,
-            style: const TextStyle(fontSize: 12, color: SBColors.text2, height: 1.5)),
-        const SizedBox(height: 10),
-        Wrap(spacing: 12, children: [
-          _Meta('📅', schedule),
-          _Meta('📍', location),
-          _Meta('👥', '$members/$maxMembers'),
-        ]),
-        const SizedBox(height: 10),
-        const Divider(color: SBColors.border, height: 1),
-        const SizedBox(height: 10),
-        Row(children: [
-          // member avatars
-          Row(children: List.generate(3, (i) => Container(
-            width: 24, height: 24,
-            margin: EdgeInsets.only(left: i == 0 ? 0 : -6),
-            decoration: BoxDecoration(
-              color: SBColors.brandPale,
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 2),
-            ),
-            child: Center(
-              child: Text(String.fromCharCode(65 + i),
-                  style: const TextStyle(
-                      fontSize: 9, fontWeight: FontWeight.w700, color: SBColors.brand)),
-            ),
-          ))),
-          const SizedBox(width: 8),
-          Text('+${members - 3} more',
-              style: const TextStyle(fontSize: 10, color: SBColors.text3)),
-          const Spacer(),
-          GestureDetector(
-            onTap: onTap,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-              decoration: BoxDecoration(
-                color: isJoined ? SBColors.green.withOpacity(0.1) : SBColors.brandPale,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                    color: isJoined ? SBColors.green : SBColors.brand, width: 1.5),
+        onTap: onTap,
+        child: Container(
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+          padding: const EdgeInsets.all(14),
+          decoration: SBTheme.card,
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Expanded(
+                child: Text('${group.emoji}  ${group.name}',
+                    style: const TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w600, color: SBColors.text)),
               ),
-              child: Text(
-                isJoined ? '✓ Joined' : 'Join',
-                style: TextStyle(
-                    fontSize: 11, fontWeight: FontWeight.w700,
-                    color: isJoined ? SBColors.green : SBColors.brand),
+              if (group.course.isNotEmpty)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                  decoration: BoxDecoration(
+                      color: SBColors.brandPale,
+                      borderRadius: BorderRadius.circular(8)),
+                  child: Text(group.course,
+                      style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: SBColors.brand)),
+                ),
+            ]),
+            const SizedBox(height: 6),
+            Text(group.description,
+                style: const TextStyle(
+                    fontSize: 12, color: SBColors.text2, height: 1.5)),
+            const SizedBox(height: 10),
+            Wrap(spacing: 12, children: [
+              _Meta('📅', group.schedule),
+              _Meta('📍', group.location),
+              _Meta('👥', '${group.members}/${group.maxMembers}'),
+            ]),
+            const SizedBox(height: 10),
+            const Divider(color: SBColors.border, height: 1),
+            const SizedBox(height: 10),
+            Row(children: [
+              // Member avatars (up to 3)
+              Row(
+                children: List.generate(
+                  group.memberList.isNotEmpty
+                      ? group.memberList.length.clamp(0, 3)
+                      : group.members.clamp(0, 3),
+                  (i) => Container(
+                    width: 24, height: 24,
+                    margin: EdgeInsets.only(left: i == 0 ? 0 : -6),
+                    decoration: BoxDecoration(
+                      color: SBColors.brandPale,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 2),
+                    ),
+                    child: Center(
+                      child: Text(
+                        group.memberList.isNotEmpty
+                            ? (group.memberList[i].emoji.isNotEmpty
+                                ? group.memberList[i].emoji[0]
+                                : String.fromCharCode(65 + i))
+                            : String.fromCharCode(65 + i),
+                        style: const TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w700,
+                            color: SBColors.brand),
+                      ),
+                    ),
+                  ),
+                ),
               ),
-            ),
-          ),
-        ]),
-      ]),
-    ),
-  );
+              const SizedBox(width: 8),
+              if (group.members > 3)
+                Text('+${group.members - 3} more',
+                    style: const TextStyle(fontSize: 10, color: SBColors.text3)),
+              const Spacer(),
+              GestureDetector(
+                onTap: isLoading ? null : onJoinToggle,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: isJoined
+                        ? SBColors.green.withOpacity(0.1)
+                        : SBColors.brandPale,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                        color: isJoined ? SBColors.green : SBColors.brand,
+                        width: 1.5),
+                  ),
+                  child: isLoading
+                      ? SizedBox(
+                          width: 14, height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 1.5,
+                            color: isJoined ? SBColors.green : SBColors.brand,
+                          ),
+                        )
+                      : Text(
+                          isJoined ? '✓ Joined' : 'Join',
+                          style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: isJoined ? SBColors.green : SBColors.brand),
+                        ),
+                ),
+              ),
+            ]),
+          ]),
+        ),
+      );
 }
 
 class _Meta extends StatelessWidget {
   final String icon, label;
   const _Meta(this.icon, this.label);
-
   @override
-  Widget build(BuildContext context) => Row(mainAxisSize: MainAxisSize.min, children: [
-    Text(icon, style: const TextStyle(fontSize: 11)),
-    const SizedBox(width: 4),
-    Text(label, style: const TextStyle(fontSize: 10, color: SBColors.text3)),
-  ]);
+  Widget build(BuildContext context) =>
+      Row(mainAxisSize: MainAxisSize.min, children: [
+        Text(icon, style: const TextStyle(fontSize: 11)),
+        const SizedBox(width: 4),
+        Text(label, style: const TextStyle(fontSize: 10, color: SBColors.text3)),
+      ]);
 }
 
 // ─────────────────────────────────────────────────────────────
 //  2. Group Detail
 // ─────────────────────────────────────────────────────────────
-class SBGroupDetailScreen extends StatelessWidget {
-  const SBGroupDetailScreen({super.key});
+class SBGroupDetailScreen extends StatefulWidget {
+  final GroupModel group;
+  const SBGroupDetailScreen({super.key, required this.group});
+
+  @override
+  State<SBGroupDetailScreen> createState() => _SBGroupDetailScreenState();
+}
+
+class _SBGroupDetailScreenState extends State<SBGroupDetailScreen> {
+  late bool _isJoined;
+  bool _loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _isJoined = widget.group.isJoined;
+  }
+
+  Future<void> _toggleMembership() async {
+    setState(() => _loading = true);
+    try {
+      if (_isJoined) {
+        await _GroupsApi.leaveGroup(widget.group.id);
+      } else {
+        await _GroupsApi.joinGroup(widget.group.id);
+      }
+      setState(() => _isJoined = !_isJoined);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Action failed: ${e.toString()}'),
+          backgroundColor: Colors.red,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final g = widget.group;
     return Scaffold(
       backgroundColor: SBColors.surface2,
       appBar: AppBar(
@@ -273,104 +659,177 @@ class SBGroupDetailScreen extends StatelessWidget {
           icon: const Icon(Icons.arrow_back_ios_new, size: 18, color: SBColors.text),
           onPressed: () => Navigator.pop(context),
         ),
-        title: const Text('MATH201 Study Squad',
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: SBColors.text)),
+        title: Text(g.name,
+            style: const TextStyle(
+                fontSize: 15, fontWeight: FontWeight.w600, color: SBColors.text)),
         actions: const [
           Padding(
             padding: EdgeInsets.only(right: 16),
-            child: Text('⋯', style: TextStyle(fontSize: 22, color: SBColors.text2)),
+            child: Text('⋯',
+                style: TextStyle(fontSize: 22, color: SBColors.text2)),
           ),
         ],
       ),
       body: SingleChildScrollView(
         child: Column(children: [
-          // Banner
+          // ── Banner ────────────────────────────────────
           Container(
             margin: const EdgeInsets.all(16),
             padding: const EdgeInsets.all(16),
             decoration: SBTheme.brandGradient(),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('MATH 201 · CALCULUS II',
-                  style: TextStyle(
-                      fontSize: 10, color: Colors.white.withOpacity(0.75),
-                      fontWeight: FontWeight.w600, letterSpacing: 1)),
+              if (g.course.isNotEmpty)
+                Text(g.course.toUpperCase(),
+                    style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.white.withOpacity(0.75),
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 1)),
               const SizedBox(height: 6),
-              const Text('📐  MATH201 Study Squad',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white)),
+              Text('${g.emoji}  ${g.name}',
+                  style: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white)),
               const SizedBox(height: 8),
-              Text('Focused on Calculus II exam prep. Working through past papers together every week.',
-                  style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.85), height: 1.5)),
+              Text(g.description,
+                  style: TextStyle(
+                      fontSize: 12, color: Colors.white.withOpacity(0.85), height: 1.5)),
               const SizedBox(height: 12),
               Wrap(spacing: 16, children: [
-                Text('📅 Tue & Thu · 4pm',
+                Text('📅 ${g.schedule}',
                     style: TextStyle(fontSize: 11, color: Colors.white.withOpacity(0.8))),
-                Text('📍 Library Room 3',
+                Text('📍 ${g.location}',
                     style: TextStyle(fontSize: 11, color: Colors.white.withOpacity(0.8))),
               ]),
             ]),
           ),
-          // Stats
-          _StatsBar(const [('8','Members'),('12','Max'),('24','Sessions'),('18','Files')]),
 
-          // Members
-          SBSectionLabel(title: 'Members (8)', action: 'Invite +'),
+          // ── Stats ─────────────────────────────────────
+          _StatsBar([
+            ('${g.members}', 'Members'),
+            ('${g.maxMembers}', 'Max'),
+            ('${g.sessions.length}', 'Sessions'),
+            ('${g.fileCount}', 'Files'),
+          ]),
+
+          // ── Members ───────────────────────────────────
+          SBSectionLabel(
+              title: 'Members (${g.members})', action: 'Invite +'),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
             child: Column(children: [
-              _MemberRow('👩‍🎓', 'Sarah K.', 'BSc Mathematics', true, isAdmin: true),
-              const SizedBox(height: 10),
-              _MemberRow('👨‍💻', 'James M.', 'BSc CS', false),
-              const SizedBox(height: 10),
-              _MemberRow('👩‍🔬', 'Amara O.', 'BSc Physics', true),
-              const SizedBox(height: 8),
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text('+ 5 more members',
-                    style: TextStyle(fontSize: 12, color: SBColors.brand, fontWeight: FontWeight.w600)),
-              ),
+              if (g.memberList.isEmpty)
+                const Text('No member details available',
+                    style: TextStyle(fontSize: 12, color: SBColors.text3))
+              else ...[
+                ...g.memberList.take(3).map((m) => Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: _MemberRow(
+                        m.emoji,
+                        m.name,
+                        m.degree,
+                        m.isOnline,
+                        isAdmin: m.isAdmin,
+                      ),
+                    )),
+                if (g.members > 3)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '+ ${g.members - 3} more members',
+                      style: const TextStyle(
+                          fontSize: 12,
+                          color: SBColors.brand,
+                          fontWeight: FontWeight.w600),
+                    ),
+                  ),
+              ],
             ]),
           ),
 
-          // Sessions
+          // ── Upcoming Sessions ─────────────────────────
           const SBSectionLabel(title: 'Upcoming Sessions'),
-          Container(
-            margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: SBColors.border),
+          if (g.sessions.isEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: SBColors.border)),
+                child: const Center(
+                  child: Text('No upcoming sessions',
+                      style: TextStyle(fontSize: 12, color: SBColors.text3)),
+                ),
+              ),
+            )
+          else
+            Container(
+              margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: SBColors.border),
+              ),
+              child: Column(
+                children: g.sessions
+                    .take(3)
+                    .toList()
+                    .asMap()
+                    .entries
+                    .map((e) => Column(children: [
+                          if (e.key > 0)
+                            const Divider(color: SBColors.border, height: 1),
+                          _SessionRow(
+                            e.value.dayLabel,
+                            e.value.dateNum,
+                            e.value.title,
+                            e.value.subtitle,
+                            SBColors.brand,
+                            SBColors.brandPale,
+                          ),
+                        ]))
+                    .toList(),
+              ),
             ),
-            child: Column(children: [
-              _SessionRow('TUE','18','Calculus II – Integration',
-                  '4:00 PM · Library Room 3', SBColors.brand, SBColors.brandPale),
-              const Divider(color: SBColors.border, height: 1),
-              _SessionRow('THU','20','Mock Exam Practice',
-                  '4:00 PM · Google Meet', SBColors.green, Color(0xFFEDFAF5)),
-            ]),
-          ),
 
-          // CTA
+          // ── CTA button ────────────────────────────────
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 28),
             child: GestureDetector(
-              onTap: () {},
-              child: Container(
+              onTap: _loading ? null : _toggleMembership,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 150),
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 15),
                 decoration: BoxDecoration(
-                  color: SBColors.green,
+                  color: _isJoined
+                      ? SBColors.green
+                      : SBColors.brand,
                   borderRadius: BorderRadius.circular(16),
                   boxShadow: [
                     BoxShadow(
-                        color: SBColors.green.withOpacity(0.3),
+                        color: (_isJoined ? SBColors.green : SBColors.brand)
+                            .withOpacity(0.3),
                         blurRadius: 20,
                         offset: const Offset(0, 6)),
                   ],
                 ),
-                child: const Center(
-                  child: Text("✅  You're a Member · View Chat",
-                      style: TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.w700, color: Colors.white)),
+                child: Center(
+                  child: _loading
+                      ? const SizedBox(
+                          width: 20, height: 20,
+                          child: CircularProgressIndicator(
+                              color: Colors.white, strokeWidth: 2))
+                      : Text(
+                          _isJoined
+                              ? "✅  You're a Member · View Chat"
+                              : '👥  Join This Group',
+                          style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white),
+                        ),
                 ),
               ),
             ),
@@ -384,84 +843,94 @@ class SBGroupDetailScreen extends StatelessWidget {
 class _StatsBar extends StatelessWidget {
   final List<(String, String)> items;
   const _StatsBar(this.items);
-
   @override
   Widget build(BuildContext context) => Container(
-    margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-    decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: SBColors.border)),
-    child: Row(
-      children: items.indexed.map(((int, (String, String)) e) {
-        final (i, (val, lbl)) = e;
-        return Expanded(
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            decoration: BoxDecoration(
-              border: Border(
-                right: i < items.length - 1
-                    ? const BorderSide(color: SBColors.border)
-                    : BorderSide.none,
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: SBColors.border)),
+        child: Row(
+          children: items.indexed.map(((int, (String, String)) e) {
+            final (i, (val, lbl)) = e;
+            return Expanded(
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                decoration: BoxDecoration(
+                  border: Border(
+                    right: i < items.length - 1
+                        ? const BorderSide(color: SBColors.border)
+                        : BorderSide.none,
+                  ),
+                ),
+                child: Column(children: [
+                  Text(val,
+                      style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: SBColors.brand)),
+                  Text(lbl,
+                      style: const TextStyle(fontSize: 9, color: SBColors.text3)),
+                ]),
               ),
-            ),
-            child: Column(children: [
-              Text(val,
-                  style: const TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.w700, color: SBColors.brand)),
-              Text(lbl, style: const TextStyle(fontSize: 9, color: SBColors.text3)),
-            ]),
-          ),
-        );
-      }).toList(),
-    ),
-  );
+            );
+          }).toList(),
+        ),
+      );
 }
 
 class _MemberRow extends StatelessWidget {
   final String emoji, name, degree;
   final bool isOnline;
   final bool isAdmin;
-  const _MemberRow(this.emoji, this.name, this.degree, this.isOnline, {this.isAdmin = false});
-
+  const _MemberRow(this.emoji, this.name, this.degree, this.isOnline,
+      {this.isAdmin = false});
   @override
   Widget build(BuildContext context) => Row(children: [
-    Container(
-      width: 36, height: 36,
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(colors: [SBColors.brand, SBColors.brandDark]),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Center(child: Text(emoji, style: const TextStyle(fontSize: 16))),
-    ),
-    const SizedBox(width: 10),
-    Expanded(
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Text(name,
-              style: const TextStyle(
-                  fontSize: 13, fontWeight: FontWeight.w600, color: SBColors.text)),
-          if (isAdmin) ...[
-            const SizedBox(width: 6),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                  color: SBColors.brandPale, borderRadius: BorderRadius.circular(6)),
-              child: const Text('Admin',
-                  style: TextStyle(
-                      fontSize: 9, fontWeight: FontWeight.w700, color: SBColors.brand)),
-            ),
-          ],
-        ]),
-        Text(degree, style: const TextStyle(fontSize: 11, color: SBColors.text3)),
-      ]),
-    ),
-    Text(
-      isOnline ? '● Online' : '2h ago',
-      style: TextStyle(
-          fontSize: 11, color: isOnline ? SBColors.green : SBColors.text3),
-    ),
-  ]);
+        Container(
+          width: 36, height: 36,
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+                colors: [SBColors.brand, SBColors.brandDark]),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Center(child: Text(emoji, style: const TextStyle(fontSize: 16))),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Text(name,
+                  style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: SBColors.text)),
+              if (isAdmin) ...[
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                      color: SBColors.brandPale,
+                      borderRadius: BorderRadius.circular(6)),
+                  child: const Text('Admin',
+                      style: TextStyle(
+                          fontSize: 9,
+                          fontWeight: FontWeight.w700,
+                          color: SBColors.brand)),
+                ),
+              ],
+            ]),
+            Text(degree,
+                style: const TextStyle(fontSize: 11, color: SBColors.text3)),
+          ]),
+        ),
+        Text(
+          isOnline ? '● Online' : '2h ago',
+          style: TextStyle(
+              fontSize: 11,
+              color: isOnline ? SBColors.green : SBColors.text3),
+        ),
+      ]);
 }
 
 class _SessionRow extends StatelessWidget {
@@ -469,33 +938,37 @@ class _SessionRow extends StatelessWidget {
   final Color color, bgColor;
   const _SessionRow(
       this.dayLabel, this.dateNum, this.title, this.subtitle, this.color, this.bgColor);
-
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.all(12),
-    child: Row(children: [
-      Container(
-        width: 44, height: 44,
-        decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(10)),
-        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Text(dayLabel,
-              style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: color)),
-          Text(dateNum,
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: color)),
+        padding: const EdgeInsets.all(12),
+        child: Row(children: [
+          Container(
+            width: 44, height: 44,
+            decoration: BoxDecoration(
+                color: bgColor, borderRadius: BorderRadius.circular(10)),
+            child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Text(dayLabel,
+                  style: TextStyle(
+                      fontSize: 9, fontWeight: FontWeight.w700, color: color)),
+              Text(dateNum,
+                  style: TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.w700, color: color)),
+            ]),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(title,
+                  style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: SBColors.text)),
+              Text(subtitle,
+                  style: const TextStyle(fontSize: 11, color: SBColors.text3)),
+            ]),
+          ),
         ]),
-      ),
-      const SizedBox(width: 12),
-      Expanded(
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(title,
-              style: const TextStyle(
-                  fontSize: 13, fontWeight: FontWeight.w600, color: SBColors.text)),
-          Text(subtitle,
-              style: const TextStyle(fontSize: 11, color: SBColors.text3)),
-        ]),
-      ),
-    ]),
-  );
+      );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -510,6 +983,62 @@ class SBCreateGroupScreen extends StatefulWidget {
 
 class _SBCreateGroupScreenState extends State<SBCreateGroupScreen> {
   String _privacy = 'Open';
+  bool _loading = false;
+
+  final _nameCtrl        = TextEditingController();
+  final _courseCtrl      = TextEditingController();
+  final _descCtrl        = TextEditingController();
+  final _maxMembersCtrl  = TextEditingController(text: '12');
+  final _scheduleCtrl    = TextEditingController();
+  final _locationCtrl    = TextEditingController();
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _courseCtrl.dispose();
+    _descCtrl.dispose();
+    _maxMembersCtrl.dispose();
+    _scheduleCtrl.dispose();
+    _locationCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_nameCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter a group name')),
+      );
+      return;
+    }
+    setState(() => _loading = true);
+    try {
+      await _GroupsApi.createGroup({
+        'name':        _nameCtrl.text.trim(),
+        'course':      _courseCtrl.text.trim(),
+        'description': _descCtrl.text.trim(),
+        'max_members': int.tryParse(_maxMembersCtrl.text.trim()) ?? 12,
+        'schedule':    _scheduleCtrl.text.trim(),
+        'location':    _locationCtrl.text.trim(),
+        'privacy':     _privacy.toLowerCase(),
+      });
+      if (!mounted) return;
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: const Text('🚀 Group created successfully!'),
+        backgroundColor: SBColors.green,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Failed to create group: ${e.toString()}'),
+        backgroundColor: Colors.red,
+      ));
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -523,14 +1052,25 @@ class _SBCreateGroupScreenState extends State<SBCreateGroupScreen> {
           onPressed: () => Navigator.pop(context),
         ),
         title: const Text('Create Study Group',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: SBColors.text)),
-        actions: const [
+            style: TextStyle(
+                fontSize: 16, fontWeight: FontWeight.w700, color: SBColors.text)),
+        actions: [
           Padding(
-            padding: EdgeInsets.only(right: 16),
-            child: Center(
-              child: Text('Save',
-                  style: TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w600, color: SBColors.brand)),
+            padding: const EdgeInsets.only(right: 16),
+            child: GestureDetector(
+              onTap: _loading ? null : _submit,
+              child: Center(
+                child: _loading
+                    ? const SizedBox(
+                        width: 16, height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: SBColors.brand))
+                    : const Text('Save',
+                        style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: SBColors.brand)),
+              ),
             ),
           ),
         ],
@@ -538,24 +1078,21 @@ class _SBCreateGroupScreenState extends State<SBCreateGroupScreen> {
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(children: [
-          SBFormField(label: 'Group Name', value: 'MATH201 Study Squad'),
+          SBFormField(label: 'Group Name',   controller: _nameCtrl),
           const SizedBox(height: 12),
-          SBFormField(label: 'Course Code', value: 'MATH 201 – Calculus II'),
+          SBFormField(label: 'Course Code',  controller: _courseCtrl),
           const SizedBox(height: 12),
-          SBFormField(
-            label: 'Description',
-            value: 'Focused on Calculus II exam prep. Working through past papers together every week.',
-            multiline: true,
-          ),
+          SBFormField(label: 'Description',  controller: _descCtrl,   multiline: true),
           const SizedBox(height: 12),
           Row(children: [
-            Expanded(child: SBFormField(label: 'Max Members', value: '12')),
+            Expanded(child: SBFormField(label: 'Max Members', controller: _maxMembersCtrl)),
             const SizedBox(width: 12),
-            Expanded(child: SBFormField(label: 'Schedule', value: 'Tue & Thu · 4pm')),
+            Expanded(child: SBFormField(label: 'Schedule',    controller: _scheduleCtrl)),
           ]),
           const SizedBox(height: 12),
-          SBFormField(label: 'Location', value: '📍 University Library – Room 3'),
+          SBFormField(label: 'Location', controller: _locationCtrl),
           const SizedBox(height: 12),
+
           // Privacy
           Container(
             padding: const EdgeInsets.all(14),
@@ -567,38 +1104,37 @@ class _SBCreateGroupScreenState extends State<SBCreateGroupScreen> {
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               const Text('GROUP PRIVACY',
                   style: TextStyle(
-                      fontSize: 10, fontWeight: FontWeight.w700,
-                      color: SBColors.text3, letterSpacing: 1)),
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                      color: SBColors.text3,
+                      letterSpacing: 1)),
               const SizedBox(height: 8),
               Wrap(spacing: 8, runSpacing: 8, children: [
-                SBChip(label: '🔓 Open',
+                SBChip(
+                    label: '🔓 Open',
                     active: _privacy == 'Open',
                     onTap: () => setState(() => _privacy = 'Open')),
-                SBChip(label: '🔒 Request to Join',
+                SBChip(
+                    label: '🔒 Request to Join',
                     active: _privacy == 'Request',
                     onTap: () => setState(() => _privacy = 'Request')),
-                SBChip(label: '🔑 Invite Only',
+                SBChip(
+                    label: '🔑 Invite Only',
                     active: _privacy == 'Invite',
                     onTap: () => setState(() => _privacy = 'Invite')),
               ]),
             ]),
           ),
           const SizedBox(height: 20),
+
           GestureDetector(
-            onTap: () {
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: const Text('🚀 Group created successfully!'),
-                backgroundColor: SBColors.green,
-                behavior: SnackBarBehavior.floating,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ));
-            },
-            child: Container(
+            onTap: _loading ? null : _submit,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 15),
               decoration: BoxDecoration(
-                color: SBColors.brand,
+                color: _loading ? SBColors.brand.withOpacity(0.6) : SBColors.brand,
                 borderRadius: BorderRadius.circular(16),
                 boxShadow: [
                   BoxShadow(
@@ -607,10 +1143,17 @@ class _SBCreateGroupScreenState extends State<SBCreateGroupScreen> {
                       offset: const Offset(0, 6)),
                 ],
               ),
-              child: const Center(
-                child: Text('🚀  Create Group',
-                    style: TextStyle(
-                        fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white)),
+              child: Center(
+                child: _loading
+                    ? const SizedBox(
+                        width: 20, height: 20,
+                        child: CircularProgressIndicator(
+                            color: Colors.white, strokeWidth: 2))
+                    : const Text('🚀  Create Group',
+                        style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white)),
               ),
             ),
           ),
@@ -619,4 +1162,53 @@ class _SBCreateGroupScreenState extends State<SBCreateGroupScreen> {
       ),
     );
   }
+}
+
+// ── Empty / error states ──────────────────────────────────────
+class _EmptyState extends StatelessWidget {
+  const _EmptyState();
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.all(40),
+        child: Column(children: [
+          const Text('👥', style: TextStyle(fontSize: 40)),
+          const SizedBox(height: 12),
+          const Text('No groups found',
+              style: TextStyle(
+                  fontSize: 15, fontWeight: FontWeight.w600, color: SBColors.text)),
+          const SizedBox(height: 4),
+          const Text('Try a different filter or create a new group',
+              style: TextStyle(fontSize: 12, color: SBColors.text3)),
+        ]),
+      );
+}
+
+class _ErrorState extends StatelessWidget {
+  final VoidCallback onRetry;
+  const _ErrorState({required this.onRetry});
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.all(40),
+        child: Column(children: [
+          const Text('⚠️', style: TextStyle(fontSize: 40)),
+          const SizedBox(height: 12),
+          const Text('Could not load groups',
+              style: TextStyle(
+                  fontSize: 15, fontWeight: FontWeight.w600, color: SBColors.text)),
+          const SizedBox(height: 12),
+          GestureDetector(
+            onTap: onRetry,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+              decoration: BoxDecoration(
+                  color: SBColors.brand, borderRadius: BorderRadius.circular(12)),
+              child: const Text('Retry',
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white)),
+            ),
+          ),
+        ]),
+      );
 }

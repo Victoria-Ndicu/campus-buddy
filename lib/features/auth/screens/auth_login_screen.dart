@@ -1,10 +1,14 @@
 // auth module — auth_login_screen.dart
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import '../widgets/au_widgets.dart';
 import 'auth_signup_screen.dart';
 import 'auth_reset_screen.dart';
 import 'auth_gate.dart';
 import '../../home/screens/home_screen.dart';
+
+const _baseUrl = 'https://campusbuddybackend-production.up.railway.app';
 
 class AuthLoginScreen extends StatefulWidget {
   const AuthLoginScreen({super.key});
@@ -29,6 +33,7 @@ class _AuthLoginScreenState extends State<AuthLoginScreen> {
   Future<void> _onLogin() async {
     final email    = _emailCtrl.text.trim();
     final password = _passwordCtrl.text;
+
     if (email.isEmpty || password.isEmpty) {
       _snack('Please fill in all fields.');
       return;
@@ -36,17 +41,51 @@ class _AuthLoginScreenState extends State<AuthLoginScreen> {
 
     setState(() => _loading = true);
 
-    // TODO: replace with your real API call
-    await Future.delayed(const Duration(milliseconds: 1200));
-    await authSaveToken('mock_token_${email.hashCode}');
+    try {
+      final response = await http.post(
+        Uri.parse('$_baseUrl/api/v1/auth/login/'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'email': email,
+          'password': password,
+        }),
+      );
 
-    if (!mounted) return;
-    setState(() => _loading = false);
+      if (!mounted) return;
+      final data = jsonDecode(response.body);
 
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => HomeScreen()),
-      (_) => false,
-    );
+      if (response.statusCode == 200) {
+        // ✅ Login success — backend returns { accessToken, refreshToken, user }
+        final accessToken = data['accessToken'] ?? '';
+        await authSaveToken(accessToken);
+
+        if (!mounted) return;
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => HomeScreen()),
+          (_) => false,
+        );
+      } else {
+        // ❌ Login failed — AppError returns { code, message }
+        // Handle specific error codes from services.login_user:
+        //   INVALID_CREDENTIALS → wrong email or password
+        //   EMAIL_NOT_VERIFIED  → account exists but OTP not done yet
+        final code    = data['code']    ?? '';
+        final message = data['message'] ?? data['detail'] ?? 'Login failed. Please try again.';
+
+        if (code == 'EMAIL_NOT_VERIFIED') {
+          _snack('Please verify your email before logging in.');
+          // Optionally navigate back to verify screen:
+          // Navigator.push(context, MaterialPageRoute(
+          //   builder: (_) => AuthVerifyScreen(email: email)));
+        } else {
+          _snack(message);
+        }
+      }
+    } catch (e) {
+      _snack('Network error. Please check your connection.');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   void _snack(String msg) {
@@ -108,7 +147,6 @@ class _AuthLoginScreenState extends State<AuthLoginScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      // Remember me checkbox
                       GestureDetector(
                         onTap: () => setState(() => _rememberMe = !_rememberMe),
                         child: Row(
@@ -133,7 +171,6 @@ class _AuthLoginScreenState extends State<AuthLoginScreen> {
                         ),
                       ),
 
-                      // Forgot Password — brand color, navigates to reset
                       GestureDetector(
                         onTap: () => Navigator.push(
                           context,

@@ -28,13 +28,13 @@ class AuthCheckMailScreen extends StatelessWidget {
 
             // ── Content ──────────────────────────────────────
             Padding(
-              padding: const EdgeInsets.fromLTRB(28, 48, 28, 40),
+              padding: const EdgeInsets.fromLTRB(28, 56, 28, 40),
               child: Column(
                 children: [
-                  // Envelope icon — matches HTML SVG design
+                  // Envelope icon
                   Container(
-                    width: 88,
-                    height: 88,
+                    width: 96,
+                    height: 96,
                     decoration: BoxDecoration(
                       color: AUColors.brandPale,
                       shape: BoxShape.circle,
@@ -47,7 +47,7 @@ class AuthCheckMailScreen extends StatelessWidget {
                     ),
                   ),
 
-                  const SizedBox(height: 28),
+                  const SizedBox(height: 32),
 
                   Text(
                     'Check your mail',
@@ -73,37 +73,44 @@ class AuthCheckMailScreen extends StatelessWidget {
 
                   const SizedBox(height: 20),
 
-                  Text(
-                    'We have sent password recovery\ninstructions to your email.',
+                  // Show the email address they used
+                  RichText(
                     textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: AUColors.text2,
-                      height: 1.65,
+                    text: TextSpan(
+                      style: TextStyle(
+                          fontSize: 13, color: AUColors.text2, height: 1.65),
+                      children: [
+                        const TextSpan(
+                            text: 'We sent a password reset code to\n'),
+                        TextSpan(
+                          text: email,
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            color: AUColors.text,
+                          ),
+                        ),
+                        const TextSpan(
+                            text: '\n\nPlease check your inbox and spam folder.'),
+                      ],
                     ),
                   ),
 
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 40),
 
-                  // Open mail button
+                  // Primary CTA — go enter the code
                   AUPrimaryButton(
-                    label: 'Open mail',
-                    onTap: () {
-                      // TODO: use url_launcher to open mail app
-                      // launchUrl(Uri.parse('mailto:'));
-                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                        content: const Text('Opening mail app…'),
-                        backgroundColor: AUColors.brand,
-                        behavior: SnackBarBehavior.floating,
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
-                      ));
-                    },
+                    label: 'Enter reset code',
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => AuthNewPasswordScreen(email: email),
+                      ),
+                    ),
                   ),
 
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 24),
 
-                  // "Did not receive" + "try another email"
+                  // Did not receive
                   RichText(
                     textAlign: TextAlign.center,
                     text: TextSpan(
@@ -111,12 +118,12 @@ class AuthCheckMailScreen extends StatelessWidget {
                           fontSize: 12, color: AUColors.text2, height: 1.7),
                       children: [
                         const TextSpan(
-                            text: 'Did not receive the email? Check spam folder, or '),
+                            text: 'Didn\'t receive the email? '),
                         WidgetSpan(
                           child: GestureDetector(
                             onTap: () => Navigator.pop(context),
                             child: Text(
-                              'try another email address.',
+                              'Try another address.',
                               style: TextStyle(
                                 fontSize: 12,
                                 fontWeight: FontWeight.w700,
@@ -126,25 +133,6 @@ class AuthCheckMailScreen extends StatelessWidget {
                           ),
                         ),
                       ],
-                    ),
-                  ),
-
-                  const SizedBox(height: 32),
-
-                  // Skip ahead to new password (for testing / deep link)
-                  GestureDetector(
-                    onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                          builder: (_) => AuthNewPasswordScreen()),
-                    ),
-                    child: Text(
-                      'I have a reset code →',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                        color: AUColors.brand,
-                      ),
                     ),
                   ),
                 ],
@@ -157,7 +145,7 @@ class AuthCheckMailScreen extends StatelessWidget {
   }
 }
 
-// ── Envelope painter matching HTML SVG ────────────────────────
+// ── Envelope painter ──────────────────────────────────────────
 class _EnvelopePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size s) {
@@ -175,7 +163,7 @@ class _EnvelopePainter extends CustomPainter {
       p,
     );
 
-    // Flap V from top corners to center
+    // Flap V
     canvas.drawPath(
       Path()
         ..moveTo(0, 0)

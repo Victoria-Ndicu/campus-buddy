@@ -1,7 +1,11 @@
 // auth module — auth_reset_screen.dart
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import '../widgets/au_widgets.dart';
 import 'auth_check_mail_screen.dart';
+
+const _baseUrl = 'https://campusbuddybackend-production.up.railway.app';
 
 class AuthResetScreen extends StatefulWidget {
   const AuthResetScreen({super.key});
@@ -29,16 +33,35 @@ class _AuthResetScreenState extends State<AuthResetScreen> {
 
     setState(() => _loading = true);
 
-    // TODO: call your password-reset API
-    await Future.delayed(const Duration(milliseconds: 1000));
+    try {
+      final response = await http.post(
+        Uri.parse('$_baseUrl/api/v1/auth/forgot-password/'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'email': email}),
+      );
 
-    if (!mounted) return;
-    setState(() => _loading = false);
+      if (!mounted) return;
 
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => AuthCheckMailScreen(email: email)),
-    );
+      // ✅ Backend always returns 200 regardless of whether email exists
+      // (intentional — prevents email enumeration attacks)
+      // So we always navigate forward with a generic message.
+      if (response.statusCode == 200) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => AuthCheckMailScreen(email: email),
+          ),
+        );
+      } else {
+        // Only show error on genuine server failures (500, 422, etc.)
+        final data = jsonDecode(response.body);
+        _snack(data['message'] ?? data['detail'] ?? 'Something went wrong. Please try again.');
+      }
+    } catch (e) {
+      _snack('Network error. Please check your connection.');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   void _snack(String msg) {
@@ -81,7 +104,7 @@ class _AuthResetScreenState extends State<AuthResetScreen> {
                   AUScreenTitle('Reset password'),
 
                   Text(
-                    'Enter the email linked to your CampusBuddy account.\n\nWe\'ll send you a link to reset your password.',
+                    'Enter the email linked to your CampusBuddy account.\n\nIf an account exists, you\'ll receive a reset code shortly.',
                     style: TextStyle(
                       fontSize: 13,
                       color: AUColors.text2,
@@ -109,7 +132,6 @@ class _AuthResetScreenState extends State<AuthResetScreen> {
 
                   const SizedBox(height: 24),
 
-                  // Back to login link
                   AULinkRow(
                     text: 'Remember your password?',
                     linkText: 'Sign in',

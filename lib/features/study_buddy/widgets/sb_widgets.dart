@@ -4,13 +4,15 @@ import '../models/sb_constants.dart';
 // ── Search Bar ──────────────────────────────────────────────────────────────
 class SBSearchBar extends StatelessWidget {
   final String hint;
-  const SBSearchBar({super.key, required this.hint});
+  final ValueChanged<String>? onChanged;
+  const SBSearchBar({super.key, required this.hint, this.onChanged});
 
   @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       child: TextField(
+        onChanged: onChanged,
         decoration: InputDecoration(
           hintText: hint,
           hintStyle: const TextStyle(color: SBColors.text3, fontSize: 13),
@@ -165,19 +167,69 @@ class SBPrimaryButton extends StatelessWidget {
 // ── Form Field ───────────────────────────────────────────────────────────────
 class SBFormField extends StatelessWidget {
   final String label;
-  final String value;
+  final String? value;
+  final TextEditingController? controller;
   final bool multiline;
   final bool active;
   const SBFormField({
     super.key,
     required this.label,
-    required this.value,
+    this.value,
+    this.controller,
     this.multiline = false,
     this.active = false,
   });
 
   @override
   Widget build(BuildContext context) {
+    // If a controller is provided, render an editable TextField
+    if (controller != null) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label.toUpperCase(),
+              style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: SBColors.text3,
+                letterSpacing: 0.8,
+              ),
+            ),
+            const SizedBox(height: 6),
+            TextField(
+              controller: controller,
+              maxLines: multiline ? 5 : 1,
+              style: const TextStyle(fontSize: 13, color: SBColors.text, height: 1.5),
+              decoration: InputDecoration(
+                filled: true,
+                fillColor: active ? SBColors.brandPale : Colors.white,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: SBColors.border),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(
+                    color: active ? SBColors.brand : SBColors.border,
+                    width: active ? 1.5 : 1.0,
+                  ),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: SBColors.brand, width: 1.5),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Otherwise render as read-only display (original behaviour)
     return Padding(
       padding: const EdgeInsets.only(bottom: 14),
       child: Column(
@@ -205,11 +257,11 @@ class SBFormField extends StatelessWidget {
               ),
             ),
             child: Text(
-                    value,
-                    style: const TextStyle(fontSize: 13, color: SBColors.text, height: 1.5),
-                    maxLines: multiline ? 8 : 1,
-                    overflow: multiline ? TextOverflow.visible : TextOverflow.ellipsis,
-                  ),
+              value ?? '',
+              style: const TextStyle(fontSize: 13, color: SBColors.text, height: 1.5),
+              maxLines: multiline ? 8 : 1,
+              overflow: multiline ? TextOverflow.visible : TextOverflow.ellipsis,
+            ),
           ),
         ],
       ),
