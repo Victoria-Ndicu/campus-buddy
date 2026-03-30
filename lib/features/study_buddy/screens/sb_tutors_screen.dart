@@ -1,28 +1,25 @@
 // ============================================================
 //  StudyBuddy — sb_tutors_screen.dart  (API-connected)
 //
-//  GET /api/study/tutors/?subject=&search=  → tutor list
-//  POST /api/study/bookings/                → create booking
-//  POST /api/study/tutors/                  → upsert tutor profile
+//  Now uses ApiClient (lib/core/api_client.dart) for all
+//  requests — automatic token refresh, same pattern as
+//  profile_screen.dart.
+//
+//  GET  /api/study/tutors/?subject=&search=  → tutor list
+//  POST /api/study/bookings/                 → create booking
 // ============================================================
 
 import 'dart:convert';
+import 'dart:developer' as dev;
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
+import '../../../core/api_client.dart';   // ← same shared client as profile_screen
 import '../models/sb_constants.dart';
 import '../widgets/sb_widgets.dart';
 
-// ── API config ────────────────────────────────────────────────
-const String _kBaseUrl = 'https://campusbuddybackend-production.up.railway.app/api/v1/study-buddy/';
-
-// ── Auth helper (plug in your token source) ───────────────────
-Map<String, String> get _headers => {
-      'Content-Type': 'application/json',
-      // 'Authorization': 'Bearer ${AuthService.instance.token}',
-    };
-
-// ── Tutor model ───────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+//  TUTOR MODEL
+// ─────────────────────────────────────────────────────────────
 class TutorModel {
   final String id;
   final String name;
@@ -58,7 +55,6 @@ class TutorModel {
     required this.availability,
   });
 
-  /// Cycle through a small set of gradients based on index
   static List<Color> _gradientForIndex(int i) {
     const gradients = [
       [Color(0xFF667EEA), Color(0xFF4A5FCC)],
@@ -74,7 +70,7 @@ class TutorModel {
   static String _emojiForSubject(String subject) {
     final s = subject.toLowerCase();
     if (s.contains('math') || s.contains('calculus') || s.contains('stat')) return '👩‍🎓';
-    if (s.contains('cs') || s.contains('computer') || s.contains('python') || s.contains('code')) return '👨‍💻';
+    if (s.contains('cs') || s.contains('computer') || s.contains('python')) return '👨‍💻';
     if (s.contains('chem')) return '👩‍🔬';
     if (s.contains('econ') || s.contains('finance') || s.contains('business')) return '👨‍🏫';
     if (s.contains('phys')) return '🔭';
@@ -83,7 +79,6 @@ class TutorModel {
   }
 
   factory TutorModel.fromJson(Map<String, dynamic> json, int index) {
-    // Tags: prefer specializations list, else split subject string
     List<String> tags = [];
     if (json['specializations'] is List) {
       tags = (json['specializations'] as List).map((e) => e.toString()).toList();
@@ -93,48 +88,65 @@ class TutorModel {
       tags = (json['subject'] as String).split(',').map((e) => e.trim()).take(3).toList();
     }
 
-    // Availability: look for a boolean list or default all true
     List<bool> avail = List.filled(7, true);
     if (json['availability'] is List) {
       final raw = json['availability'] as List;
       avail = List.generate(7, (i) => i < raw.length ? (raw[i] == true) : false);
     }
 
-    final subject = json['subject'] as String? ?? json['subjects']?[0] ?? 'General';
+    final subject = json['subject'] as String? ??
+        (json['subjects'] is List && (json['subjects'] as List).isNotEmpty
+            ? json['subjects'][0].toString()
+            : 'General');
 
     return TutorModel(
-      id:           json['id']?.toString() ?? '',
-      name:         json['name'] as String? ?? json['user']?['full_name'] as String? ?? 'Tutor',
-      subject:      subject,
-      qualification: json['qualification'] as String? ?? json['university'] as String? ?? '',
-      hourlyRate:   (json['hourly_rate'] ?? json['rate'] ?? 0).toDouble(),
-      rating:       (json['rating'] ?? json['average_rating'] ?? 0.0).toDouble(),
-      reviewCount:  (json['review_count'] ?? json['reviews_count'] ?? 0) as int,
-      sessionCount: (json['session_count'] ?? json['total_sessions'] ?? 0) as int,
-      tags:         tags.isEmpty ? [subject] : tags,
-      isOnline:     json['is_online'] as bool? ?? json['online'] as bool? ?? false,
-      emoji:        _emojiForSubject(subject),
-      gradient:     _gradientForIndex(index),
-      bio:          json['bio'] as String? ?? json['about'] as String? ?? '',
-      responseRate: json['response_rate'] as String? ?? '—',
-      availability: avail,
+      id:            json['id']?.toString() ?? '',
+      name:          json['name'] as String? ??
+                     json['user']?['full_name'] as String? ?? 'Tutor',
+      subject:       subject,
+      qualification: json['qualification'] as String? ??
+                     json['university'] as String? ?? '',
+      hourlyRate:    (json['hourly_rate'] ?? json['rate'] ?? 0).toDouble(),
+      rating:        (json['rating'] ?? json['average_rating'] ?? 0.0).toDouble(),
+      reviewCount:   (json['review_count'] ?? json['reviews_count'] ?? 0) as int,
+      sessionCount:  (json['session_count'] ?? json['total_sessions'] ?? 0) as int,
+      tags:          tags.isEmpty ? [subject] : tags,
+      isOnline:      json['is_online'] as bool? ?? json['online'] as bool? ?? false,
+      emoji:         _emojiForSubject(subject),
+      gradient:      _gradientForIndex(index),
+      bio:           json['bio'] as String? ?? json['about'] as String? ?? '',
+      responseRate:  json['response_rate'] as String? ?? '—',
+      availability:  avail,
     );
   }
 }
 
-// ── API service ───────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+//  API SERVICE
+// ─────────────────────────────────────────────────────────────
 class _TutorsApi {
-  static Future<List<TutorModel>> fetchTutors({String? subject, String? search}) async {
+  static const _base = '/api/v1/study-buddy';
+
+  static Future<List<TutorModel>> fetchTutors({
+    String? subject,
+    String? search,
+  }) async {
     final params = <String, String>{};
     if (subject != null && subject.isNotEmpty) params['subject'] = subject;
     if (search  != null && search.isNotEmpty)  params['search']  = search;
 
-    final uri = Uri.parse('$_kBaseUrl/tutors/').replace(queryParameters: params);
-    final res = await http.get(uri, headers: _headers).timeout(const Duration(seconds: 10));
+    // ApiClient handles base URL + auth; we build query string manually
+    final query = params.entries.map((e) => '${e.key}=${Uri.encodeComponent(e.value)}').join('&');
+    final path  = query.isEmpty ? '$_base/tutors/' : '$_base/tutors/?$query';
 
-    if (res.statusCode != 200) throw Exception('Failed to load tutors (${res.statusCode})');
+    final res = await ApiClient.get(path);
+    dev.log('[SBTutors] GET $path → ${res.statusCode}');
 
-    final body = jsonDecode(res.body) as Map<String, dynamic>;
+    if (res.statusCode != 200) {
+      throw Exception('Failed to load tutors (${res.statusCode})');
+    }
+
+    final body    = jsonDecode(res.body) as Map<String, dynamic>;
     final results = (body['results'] ?? body) as List<dynamic>;
     return results
         .asMap()
@@ -143,18 +155,20 @@ class _TutorsApi {
         .toList();
   }
 
-  static Future<Map<String, dynamic>> createBooking(Map<String, dynamic> payload) async {
-    final res = await http
-        .post(Uri.parse('$_kBaseUrl/bookings/'),
-            headers: _headers, body: jsonEncode(payload))
-        .timeout(const Duration(seconds: 10));
-    if (res.statusCode != 201) throw Exception('Booking failed (${res.statusCode})');
-    return jsonDecode(res.body) as Map<String, dynamic>;
+  static Future<void> createBooking(Map<String, dynamic> payload) async {
+    final res = await ApiClient.post('$_base/bookings/', body: payload);
+    dev.log('[SBTutors] POST $_base/bookings/ → ${res.statusCode}');
+    if (res.statusCode != 201) {
+      throw Exception('Booking failed (${res.statusCode})');
+    }
   }
 }
 
 // ─────────────────────────────────────────────────────────────
-//  1. Browse Tutors
+//  1. BROWSE TUTORS
+//
+//  State pattern mirrors profile_screen.dart:
+//    _loading / _error / _tutors  (atomic setState)
 // ─────────────────────────────────────────────────────────────
 class SBTutorsScreen extends StatefulWidget {
   const SBTutorsScreen({super.key});
@@ -164,35 +178,63 @@ class SBTutorsScreen extends StatefulWidget {
 }
 
 class _SBTutorsScreenState extends State<SBTutorsScreen> {
-  int _filter = 0;
-  final _filters = ['All Subjects', 'Maths', 'Physics', 'CS', 'Economics', 'Chemistry'];
-
+  int    _filter      = 0;
   String _searchQuery = '';
-  late Future<List<TutorModel>> _tutorsFuture;
+
+  List<TutorModel>? _tutors;
+  bool    _loading = true;
+  String? _error;
+
+  final _filters = ['All Subjects', 'Maths', 'Physics', 'CS', 'Economics', 'Chemistry'];
 
   @override
   void initState() {
     super.initState();
-    _load();
+    _fetchTutors();
   }
 
-  void _load() {
-    final subject = _filter == 0 ? null : _filters[_filter];
-    _tutorsFuture = _TutorsApi.fetchTutors(
-      subject: subject,
-      search: _searchQuery.isEmpty ? null : _searchQuery,
-    );
+  Future<void> _fetchTutors() async {
+    if (mounted) setState(() { _loading = true; _error = null; });
+
+    try {
+      final subject = _filter == 0 ? null : _filters[_filter];
+      final data    = await _TutorsApi.fetchTutors(
+        subject: subject,
+        search:  _searchQuery.isEmpty ? null : _searchQuery,
+      );
+      if (mounted) setState(() { _tutors = data; _loading = false; });
+    } catch (e, st) {
+      dev.log('[SBTutors] _fetchTutors error: $e', stackTrace: st);
+      if (mounted) {
+        setState(() {
+          _error   = 'Could not load tutors. Check your connection.';
+          _loading = false;
+        });
+      }
+    }
   }
 
-  void _applyFilter(int i) => setState(() {
-        _filter = i;
-        _load();
-      });
+  void _applyFilter(int i) {
+    setState(() => _filter = i);
+    _fetchTutors();
+  }
 
-  void _applySearch(String q) => setState(() {
-        _searchQuery = q;
-        _load();
-      });
+  void _applySearch(String q) {
+    setState(() => _searchQuery = q);
+    _fetchTutors();
+  }
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(
+        content: Text(msg),
+        backgroundColor: SBColors.brandDark,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -211,182 +253,178 @@ class _SBTutorsScreenState extends State<SBTutorsScreen> {
           Container(
             margin: const EdgeInsets.only(right: 16),
             width: 36, height: 36,
-            decoration: BoxDecoration(color: SBColors.brand, borderRadius: BorderRadius.circular(10)),
+            decoration: BoxDecoration(
+                color: SBColors.brand, borderRadius: BorderRadius.circular(10)),
             child: const Center(child: Text('⚙️', style: TextStyle(fontSize: 16))),
           ),
         ],
       ),
-      body: CustomScrollView(
-        slivers: [
-          // ── Search bar ────────────────────────────────────
-          SliverToBoxAdapter(
-            child: SBSearchBar(
-              hint: 'Search by subject, name...',
-              onChanged: _applySearch,
+      body: RefreshIndicator(
+        onRefresh: () async => _fetchTutors(),
+        color: SBColors.brand,
+        child: CustomScrollView(
+          slivers: [
+            // ── Search bar ──────────────────────────────────
+            SliverToBoxAdapter(
+              child: SBSearchBar(
+                hint: 'Search by subject, name...',
+                onChanged: _applySearch,
+              ),
             ),
-          ),
 
-          // ── Subject filter chips ──────────────────────────
-          SliverToBoxAdapter(
-            child: SizedBox(
-              height: 46,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                itemCount: _filters.length,
-                separatorBuilder: (_, __) => const SizedBox(width: 8),
-                itemBuilder: (_, i) => SBChip(
-                  label: _filters[i],
-                  active: _filter == i,
-                  onTap: () => _applyFilter(i),
+            // ── Subject filter chips ────────────────────────
+            SliverToBoxAdapter(
+              child: SizedBox(
+                height: 46,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  itemCount: _filters.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  itemBuilder: (_, i) => SBChip(
+                    label: _filters[i],
+                    active: _filter == i,
+                    onTap: () => _applyFilter(i),
+                  ),
                 ),
               ),
             ),
-          ),
 
-          // ── Additional filter pills ───────────────────────
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
-              child: Row(children: [
-                _FilterPill('💰', 'Price Range', '\$10 – \$50/hr'),
-                const SizedBox(width: 8),
-                _FilterPill('⭐', 'Min Rating', '4.0 & above'),
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: SBColors.border, width: 1.5),
+            // ── Additional filter pills ─────────────────────
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+                child: Row(children: [
+                  _FilterPill('💰', 'Price Range', '\$10 – \$50/hr'),
+                  const SizedBox(width: 8),
+                  _FilterPill('⭐', 'Min Rating', '4.0 & above'),
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: SBColors.border, width: 1.5),
+                    ),
+                    child: const Text('📅', style: TextStyle(fontSize: 14)),
                   ),
-                  child: const Text('📅', style: TextStyle(fontSize: 14)),
-                ),
-              ]),
+                ]),
+              ),
             ),
-          ),
 
-          // ── Results list ──────────────────────────────────
-          SliverToBoxAdapter(
-            child: FutureBuilder<List<TutorModel>>(
-              future: _tutorsFuture,
-              builder: (context, snap) {
-                // Loading
-                if (snap.connectionState == ConnectionState.waiting) {
-                  return Column(children: [
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                      child: SBSectionLabel(title: 'Loading tutors...', action: 'Sort ↕'),
-                    ),
-                    ..._buildShimmerCards(),
-                  ]);
-                }
-
-                // Error
-                if (snap.hasError) {
-                  return _ErrorState(onRetry: () => setState(() => _load()));
-                }
-
-                final tutors = snap.data ?? [];
-
-                // Empty
-                if (tutors.isEmpty) {
-                  return const _EmptyState();
-                }
-
-                return Column(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                      child: SBSectionLabel(
-                          title: '${tutors.length} tutor${tutors.length == 1 ? '' : 's'} found',
-                          action: 'Sort ↕'),
-                    ),
-                    ...tutors.map((t) => _TutorCard(
-                          tutor: t,
-                          onViewProfile: () => Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                  builder: (_) => SBTutorProfileScreen(tutor: t))),
-                          onBook: () => Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                  builder: (_) => SBBookingScreen(tutor: t))),
-                        )),
-                    const SizedBox(height: 24),
-                  ],
-                );
-              },
-            ),
-          ),
-        ],
+            // ── Results — mirrors _NameBlock's loading/error/data pattern ──
+            SliverToBoxAdapter(child: _buildContent()),
+          ],
+        ),
       ),
     );
   }
 
-  List<Widget> _buildShimmerCards() => List.generate(
-        3,
-        (_) => Container(
-          margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-          padding: const EdgeInsets.all(14),
-          decoration: SBTheme.card,
-          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Container(
-                width: 54, height: 54,
-                decoration: BoxDecoration(
-                    color: SBColors.border, borderRadius: BorderRadius.circular(16))),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Container(width: 120, height: 12,
-                    decoration: BoxDecoration(color: SBColors.border,
-                        borderRadius: BorderRadius.circular(6))),
-                const SizedBox(height: 8),
-                Container(width: 180, height: 10,
-                    decoration: BoxDecoration(color: SBColors.border,
-                        borderRadius: BorderRadius.circular(5))),
-                const SizedBox(height: 8),
-                Container(width: double.infinity, height: 10,
-                    decoration: BoxDecoration(color: SBColors.border,
-                        borderRadius: BorderRadius.circular(5))),
-              ]),
-            ),
-          ]),
+  Widget _buildContent() {
+    // Loading state — shimmer cards
+    if (_loading) {
+      return Column(children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: SBSectionLabel(title: 'Loading tutors...', action: 'Sort ↕'),
         ),
+        ..._shimmerCards(),
+      ]);
+    }
+
+    // Error state — message + retry (same pattern as _NameBlock)
+    if (_error != null) {
+      return _ErrorState(
+        message: _error!,
+        onRetry: _fetchTutors,
       );
+    }
+
+    final tutors = _tutors ?? [];
+
+    // Empty state
+    if (tutors.isEmpty) return const _EmptyState();
+
+    // Data
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+        child: SBSectionLabel(
+          title: '${tutors.length} tutor${tutors.length == 1 ? '' : 's'} found',
+          action: 'Sort ↕',
+        ),
+      ),
+      ...tutors.map((t) => _TutorCard(
+        tutor: t,
+        onViewProfile: () => Navigator.push(context,
+            MaterialPageRoute(builder: (_) => SBTutorProfileScreen(tutor: t))),
+        onBook: () => Navigator.push(context,
+            MaterialPageRoute(builder: (_) => SBBookingScreen(tutor: t))),
+      )),
+      const SizedBox(height: 24),
+    ]);
+  }
+
+  List<Widget> _shimmerCards() => List.generate(3, (_) => Container(
+    margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+    padding: const EdgeInsets.all(14),
+    decoration: SBTheme.card,
+    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Container(
+        width: 54, height: 54,
+        decoration: BoxDecoration(
+          color: SBColors.border,
+          borderRadius: BorderRadius.circular(16))),
+      const SizedBox(width: 12),
+      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(width: 120, height: 12,
+            decoration: BoxDecoration(color: SBColors.border,
+                borderRadius: BorderRadius.circular(6))),
+        const SizedBox(height: 8),
+        Container(width: 180, height: 10,
+            decoration: BoxDecoration(color: SBColors.border,
+                borderRadius: BorderRadius.circular(5))),
+        const SizedBox(height: 8),
+        Container(width: double.infinity, height: 10,
+            decoration: BoxDecoration(color: SBColors.border,
+                borderRadius: BorderRadius.circular(5))),
+      ])),
+    ]),
+  ));
 }
 
-// ── Filter pill (unchanged) ───────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+//  FILTER PILL
+// ─────────────────────────────────────────────────────────────
 class _FilterPill extends StatelessWidget {
   final String icon, label, value;
   const _FilterPill(this.icon, this.label, this.value);
 
   @override
   Widget build(BuildContext context) => Expanded(
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: SBColors.border, width: 1.5),
-          ),
-          child: Row(children: [
-            Text(icon, style: const TextStyle(fontSize: 14)),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(label, style: const TextStyle(fontSize: 9, color: SBColors.text3)),
-                Text(value,
-                    style: const TextStyle(
-                        fontSize: 11, fontWeight: FontWeight.w600, color: SBColors.text)),
-              ]),
-            ),
-          ]),
-        ),
-      );
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: SBColors.border, width: 1.5),
+      ),
+      child: Row(children: [
+        Text(icon, style: const TextStyle(fontSize: 14)),
+        const SizedBox(width: 6),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label, style: const TextStyle(fontSize: 9, color: SBColors.text3)),
+          Text(value, style: const TextStyle(
+              fontSize: 11, fontWeight: FontWeight.w600, color: SBColors.text)),
+        ])),
+      ]),
+    ),
+  );
 }
 
-// ── Tutor card (now data-driven, same visual) ─────────────────
+// ─────────────────────────────────────────────────────────────
+//  TUTOR CARD
+// ─────────────────────────────────────────────────────────────
 class _TutorCard extends StatelessWidget {
   final TutorModel tutor;
   final VoidCallback onViewProfile, onBook;
@@ -399,143 +437,136 @@ class _TutorCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => GestureDetector(
-        onTap: onViewProfile,
-        child: Container(
-          margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-          padding: const EdgeInsets.all(14),
-          decoration: SBTheme.card,
-          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Stack(children: [
-              Container(
-                width: 54, height: 54,
+    onTap: onViewProfile,
+    child: Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      padding: const EdgeInsets.all(14),
+      decoration: SBTheme.card,
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Stack(children: [
+          Container(
+            width: 54, height: 54,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(colors: tutor.gradient),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Center(child: Text(tutor.emoji,
+                style: const TextStyle(fontSize: 24))),
+          ),
+          if (tutor.isOnline)
+            Positioned(
+              bottom: 2, right: 2,
+              child: Container(
+                width: 12, height: 12,
                 decoration: BoxDecoration(
-                  gradient: LinearGradient(colors: tutor.gradient),
-                  borderRadius: BorderRadius.circular(16),
+                  color: SBColors.green,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 2),
                 ),
-                child: Center(
-                    child: Text(tutor.emoji, style: const TextStyle(fontSize: 24))),
               ),
-              if (tutor.isOnline)
-                Positioned(
-                  bottom: 2, right: 2,
-                  child: Container(
-                    width: 12, height: 12,
-                    decoration: BoxDecoration(
-                      color: SBColors.green,
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 2),
-                    ),
-                  ),
-                ),
+            ),
+        ]),
+        const SizedBox(width: 12),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(tutor.name, style: const TextStyle(
+              fontSize: 14, fontWeight: FontWeight.w600, color: SBColors.text)),
+          const SizedBox(height: 2),
+          Text(
+            [tutor.subject,
+              if (tutor.qualification.isNotEmpty) tutor.qualification].join(' · '),
+            style: const TextStyle(fontSize: 11, color: SBColors.text2),
+          ),
+          const SizedBox(height: 6),
+          Wrap(spacing: 5, runSpacing: 5,
+              children: tutor.tags.take(3).map<Widget>((t) => SBTag(t)).toList()),
+          const SizedBox(height: 8),
+          Row(children: [
+            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(
+                tutor.hourlyRate > 0
+                    ? '\$${tutor.hourlyRate.toStringAsFixed(0)}/hr'
+                    : 'Free',
+                style: const TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w700, color: SBColors.brand),
+              ),
+              Text(
+                tutor.rating > 0
+                    ? '⭐ ${tutor.rating.toStringAsFixed(1)}  (${tutor.reviewCount} reviews)'
+                    : 'No reviews yet',
+                style: const TextStyle(fontSize: 11, color: SBColors.accent),
+              ),
             ]),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(tutor.name,
-                    style: const TextStyle(
-                        fontSize: 14, fontWeight: FontWeight.w600, color: SBColors.text)),
-                const SizedBox(height: 2),
-                Text(
-                  [tutor.subject, if (tutor.qualification.isNotEmpty) tutor.qualification]
-                      .join(' · '),
-                  style: const TextStyle(fontSize: 11, color: SBColors.text2),
-                ),
-                const SizedBox(height: 6),
-                Wrap(
-                  spacing: 5, runSpacing: 5,
-                  children: tutor.tags.take(3).map<Widget>((t) => SBTag(t)).toList(),
-                ),
-                const SizedBox(height: 8),
-                Row(children: [
-                  Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(
-                      tutor.hourlyRate > 0
-                          ? '\$${tutor.hourlyRate.toStringAsFixed(0)}/hr'
-                          : 'Free',
-                      style: const TextStyle(
-                          fontSize: 13, fontWeight: FontWeight.w700, color: SBColors.brand),
-                    ),
-                    Text(
-                      tutor.rating > 0
-                          ? '⭐ ${tutor.rating.toStringAsFixed(1)}  (${tutor.reviewCount} reviews)'
-                          : 'No reviews yet',
-                      style: const TextStyle(fontSize: 11, color: SBColors.accent),
-                    ),
-                  ]),
-                  const Spacer(),
-                  GestureDetector(
-                    onTap: onBook,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: SBColors.brand,
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: const Text('Book',
-                          style: TextStyle(
-                              fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
-                    ),
-                  ),
-                ]),
-              ]),
+            const Spacer(),
+            GestureDetector(
+              onTap: onBook,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                decoration: BoxDecoration(
+                  color: SBColors.brand, borderRadius: BorderRadius.circular(10)),
+                child: const Text('Book', style: TextStyle(
+                    fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
+              ),
             ),
           ]),
-        ),
-      );
+        ])),
+      ]),
+    ),
+  );
 }
 
-// ── Empty / error states ──────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+//  EMPTY / ERROR STATES
+// ─────────────────────────────────────────────────────────────
 class _EmptyState extends StatelessWidget {
   const _EmptyState();
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.all(40),
-        child: Column(children: [
-          const Text('🔍', style: TextStyle(fontSize: 40)),
-          const SizedBox(height: 12),
-          const Text('No tutors found',
-              style: TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.w600, color: SBColors.text)),
-          const SizedBox(height: 4),
-          const Text('Try a different subject or search term',
-              style: TextStyle(fontSize: 12, color: SBColors.text3)),
-        ]),
-      );
+    padding: const EdgeInsets.all(40),
+    child: Column(children: const [
+      Text('🔍', style: TextStyle(fontSize: 40)),
+      SizedBox(height: 12),
+      Text('No tutors found', style: TextStyle(
+          fontSize: 15, fontWeight: FontWeight.w600, color: SBColors.text)),
+      SizedBox(height: 4),
+      Text('Try a different subject or search term',
+          style: TextStyle(fontSize: 12, color: SBColors.text3)),
+    ]),
+  );
 }
 
 class _ErrorState extends StatelessWidget {
+  final String message;
   final VoidCallback onRetry;
-  const _ErrorState({required this.onRetry});
+  const _ErrorState({required this.message, required this.onRetry});
+
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.all(40),
-        child: Column(children: [
-          const Text('⚠️', style: TextStyle(fontSize: 40)),
-          const SizedBox(height: 12),
-          const Text('Could not load tutors',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: SBColors.text)),
-          const SizedBox(height: 12),
-          GestureDetector(
-            onTap: onRetry,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
-              decoration: BoxDecoration(
-                  color: SBColors.brand, borderRadius: BorderRadius.circular(12)),
-              child: const Text('Retry',
-                  style: TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w600, color: Colors.white)),
-            ),
-          ),
-        ]),
-      );
+    padding: const EdgeInsets.all(40),
+    child: Column(children: [
+      const Text('⚠️', style: TextStyle(fontSize: 40)),
+      const SizedBox(height: 12),
+      Text(message, textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 13, color: SBColors.text2)),
+      const SizedBox(height: 12),
+      GestureDetector(
+        onTap: onRetry,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+          decoration: BoxDecoration(
+              color: SBColors.brand, borderRadius: BorderRadius.circular(12)),
+          child: const Text('Retry', style: TextStyle(
+              fontSize: 13, fontWeight: FontWeight.w600, color: Colors.white)),
+        ),
+      ),
+    ]),
+  );
 }
 
 // ─────────────────────────────────────────────────────────────
-//  2. Tutor Profile  (data-driven)
+//  2. TUTOR PROFILE  (data-driven, unchanged visually)
 // ─────────────────────────────────────────────────────────────
 class SBTutorProfileScreen extends StatelessWidget {
   final TutorModel tutor;
-
   const SBTutorProfileScreen({super.key, required this.tutor});
 
   static const _dayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -546,7 +577,6 @@ class SBTutorProfileScreen extends StatelessWidget {
       backgroundColor: SBColors.surface2,
       body: CustomScrollView(
         slivers: [
-          // ── Header ────────────────────────────────────────
           SliverToBoxAdapter(
             child: Container(
               decoration: const BoxDecoration(
@@ -585,28 +615,23 @@ class SBTutorProfileScreen extends StatelessWidget {
                           border: Border.all(
                               color: Colors.white.withOpacity(0.3), width: 2),
                         ),
-                        child: Center(
-                          child: Text(tutor.emoji,
-                              style: const TextStyle(fontSize: 30)),
-                        ),
+                        child: Center(child: Text(tutor.emoji,
+                            style: const TextStyle(fontSize: 30))),
                       ),
                       const SizedBox(width: 14),
                       Expanded(
                         child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(tutor.name,
-                                  style: const TextStyle(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w700,
-                                      color: Colors.white)),
+                              Text(tutor.name, style: const TextStyle(
+                                  fontSize: 18, fontWeight: FontWeight.w700,
+                                  color: Colors.white)),
                               const SizedBox(height: 4),
                               Text(
                                 tutor.qualification.isNotEmpty
                                     ? '${tutor.subject} · ${tutor.qualification}'
                                     : tutor.subject,
-                                style: TextStyle(
-                                    fontSize: 12,
+                                style: TextStyle(fontSize: 12,
                                     color: Colors.white.withOpacity(0.75)),
                               ),
                               const SizedBox(height: 6),
@@ -624,8 +649,7 @@ class SBTutorProfileScreen extends StatelessWidget {
                                       ? '${tutor.rating.toStringAsFixed(1)} · ${tutor.reviewCount} reviews'
                                       : 'No reviews yet',
                                   style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 12,
+                                      color: Colors.white, fontSize: 12,
                                       fontWeight: FontWeight.w600),
                                 ),
                               ]),
@@ -646,7 +670,6 @@ class SBTutorProfileScreen extends StatelessWidget {
             ),
           ),
 
-          // ── Stats row ─────────────────────────────────────
           SliverToBoxAdapter(
             child: _StatsRow([
               ('${tutor.reviewCount}', 'Reviews'),
@@ -655,13 +678,11 @@ class SBTutorProfileScreen extends StatelessWidget {
             ]),
           ),
 
-          // ── Detail sections ───────────────────────────────
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
             sliver: SliverList(
               delegate: SliverChildListDelegate([
                 const SizedBox(height: 16),
-
                 if (tutor.tags.isNotEmpty)
                   _ProfileSection(
                     label: 'Subjects',
@@ -670,15 +691,13 @@ class SBTutorProfileScreen extends StatelessWidget {
                       children: tutor.tags.map<Widget>((t) => SBTag(t)).toList(),
                     ),
                   ),
-
                 _ProfileSection(
                   label: 'Rate & Qualifications',
                   child: GridView.count(
                     crossAxisCount: 2,
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
-                    mainAxisSpacing: 8,
-                    crossAxisSpacing: 8,
+                    mainAxisSpacing: 8, crossAxisSpacing: 8,
                     childAspectRatio: 2.8,
                     children: [
                       _InfoBox('Hourly Rate',
@@ -692,48 +711,34 @@ class SBTutorProfileScreen extends StatelessWidget {
                     ],
                   ),
                 ),
-
                 _ProfileSection(
                   label: 'Availability This Week',
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: List.generate(
-                      7,
-                      (i) => _AvailChip(
-                        _dayLabels[i],
-                        i < tutor.availability.length
-                            ? tutor.availability[i]
-                            : false,
-                      ),
-                    ),
+                    children: List.generate(7, (i) => _AvailChip(
+                      _dayLabels[i],
+                      i < tutor.availability.length ? tutor.availability[i] : false,
+                    )),
                   ),
                 ),
-
                 if (tutor.bio.isNotEmpty)
                   _ProfileSection(
                     label: 'About',
-                    child: Text(
-                      tutor.bio,
-                      style: const TextStyle(
-                          fontSize: 13, color: SBColors.text2, height: 1.6),
-                    ),
+                    child: Text(tutor.bio, style: const TextStyle(
+                        fontSize: 13, color: SBColors.text2, height: 1.6)),
                   ),
-
                 const SizedBox(height: 8),
               ]),
             ),
           ),
 
-          // ── Book button ───────────────────────────────────
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: SBPrimaryButton(
                 label: '📅  Book a Session',
-                onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => SBBookingScreen(tutor: tutor))),
+                onTap: () => Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => SBBookingScreen(tutor: tutor))),
               ),
             ),
           ),
@@ -749,22 +754,17 @@ class _ActionBtn extends StatelessWidget {
   const _ActionBtn(this.icon, this.label);
   @override
   Widget build(BuildContext context) => Expanded(
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.15),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: Colors.white.withOpacity(0.3)),
-          ),
-          child: Center(
-            child: Text('$icon  $label',
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600)),
-          ),
-        ),
-      );
+    child: Container(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white.withOpacity(0.3)),
+      ),
+      child: Center(child: Text('$icon  $label', style: const TextStyle(
+          color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600))),
+    ),
+  );
 }
 
 class _StatsRow extends StatelessWidget {
@@ -772,40 +772,36 @@ class _StatsRow extends StatelessWidget {
   const _StatsRow(this.items);
   @override
   Widget build(BuildContext context) => Container(
-        margin: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: SBColors.border),
-        ),
-        child: Row(
-          children: items.indexed.map(((int, (String, String)) e) {
-            final (i, (val, lbl)) = e;
-            return Expanded(
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                decoration: BoxDecoration(
-                  border: Border(
-                    right: i < items.length - 1
-                        ? const BorderSide(color: SBColors.border)
-                        : BorderSide.none,
-                  ),
-                ),
-                child: Column(children: [
-                  Text(val,
-                      style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                          color: SBColors.brand)),
-                  const SizedBox(height: 2),
-                  Text(lbl,
-                      style: const TextStyle(fontSize: 10, color: SBColors.text3)),
-                ]),
+    margin: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: SBColors.border),
+    ),
+    child: Row(
+      children: items.indexed.map(((int, (String, String)) e) {
+        final (i, (val, lbl)) = e;
+        return Expanded(
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            decoration: BoxDecoration(
+              border: Border(
+                right: i < items.length - 1
+                    ? const BorderSide(color: SBColors.border)
+                    : BorderSide.none,
               ),
-            );
-          }).toList(),
-        ),
-      );
+            ),
+            child: Column(children: [
+              Text(val, style: const TextStyle(
+                  fontSize: 18, fontWeight: FontWeight.w700, color: SBColors.brand)),
+              const SizedBox(height: 2),
+              Text(lbl, style: const TextStyle(fontSize: 10, color: SBColors.text3)),
+            ]),
+          ),
+        );
+      }).toList(),
+    ),
+  );
 }
 
 class _ProfileSection extends StatelessWidget {
@@ -814,18 +810,15 @@ class _ProfileSection extends StatelessWidget {
   const _ProfileSection({required this.label, required this.child});
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(bottom: 16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(label.toUpperCase(),
-              style: const TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                  color: SBColors.text3,
-                  letterSpacing: 1)),
-          const SizedBox(height: 8),
-          child,
-        ]),
-      );
+    padding: const EdgeInsets.only(bottom: 16),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(label.toUpperCase(), style: const TextStyle(
+          fontSize: 10, fontWeight: FontWeight.w700,
+          color: SBColors.text3, letterSpacing: 1)),
+      const SizedBox(height: 8),
+      child,
+    ]),
+  );
 }
 
 class _InfoBox extends StatelessWidget {
@@ -833,23 +826,22 @@ class _InfoBox extends StatelessWidget {
   const _InfoBox(this.label, this.value);
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: SBColors.border),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(label, style: const TextStyle(fontSize: 10, color: SBColors.text3)),
-            Text(value,
-                style: const TextStyle(
-                    fontSize: 12, fontWeight: FontWeight.w600, color: SBColors.text)),
-          ],
-        ),
-      );
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: SBColors.border),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Text(label, style: const TextStyle(fontSize: 10, color: SBColors.text3)),
+        Text(value, style: const TextStyle(
+            fontSize: 12, fontWeight: FontWeight.w600, color: SBColors.text)),
+      ],
+    ),
+  );
 }
 
 class _AvailChip extends StatelessWidget {
@@ -858,21 +850,19 @@ class _AvailChip extends StatelessWidget {
   const _AvailChip(this.day, this.available);
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: BoxDecoration(
-          color: available ? SBColors.green.withOpacity(0.1) : SBColors.surface3,
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Text(day,
-            style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: available ? SBColors.green : SBColors.text3)),
-      );
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    decoration: BoxDecoration(
+      color: available ? SBColors.green.withOpacity(0.1) : SBColors.surface3,
+      borderRadius: BorderRadius.circular(10),
+    ),
+    child: Text(day, style: TextStyle(
+        fontSize: 11, fontWeight: FontWeight.w600,
+        color: available ? SBColors.green : SBColors.text3)),
+  );
 }
 
 // ─────────────────────────────────────────────────────────────
-//  3. Booking Screen  (posts to /api/study/bookings/)
+//  3. BOOKING SCREEN
 // ─────────────────────────────────────────────────────────────
 class SBBookingScreen extends StatefulWidget {
   final TutorModel tutor;
@@ -891,12 +881,10 @@ class _SBBookingScreenState extends State<SBBookingScreen> {
   static const _days  = ['Mon\n14', 'Tue\n15', 'Wed\n16', 'Thu\n17', 'Fri\n18', 'Sat\n19'];
   static const _times = ['9:00 AM', '10:00 AM', '11:00 AM', '2:00 PM', '3:00 PM', '4:00 PM'];
 
-  // Build an ISO datetime from selected day/time (rough demo — adjust to your date logic)
   String get _scheduledAt {
-    final now = DateTime.now();
-    final dayOffset = _selDay; // offset from today
+    final now  = DateTime.now();
     final hour = [9, 10, 11, 14, 15, 16][_selTime];
-    final dt = DateTime(now.year, now.month, now.day + dayOffset, hour, 0);
+    final dt   = DateTime(now.year, now.month, now.day + _selDay, hour, 0);
     return dt.toIso8601String();
   }
 
@@ -904,10 +892,10 @@ class _SBBookingScreenState extends State<SBBookingScreen> {
     setState(() => _loading = true);
     try {
       await _TutorsApi.createBooking({
-        'tutor': widget.tutor.id,
+        'tutor':        widget.tutor.id,
         'scheduled_at': _scheduledAt,
-        'mode': _mode.toLowerCase(),
-        'status': 'pending',
+        'mode':         _mode.toLowerCase(),
+        'status':       'pending',
       });
       if (!mounted) return;
       await showDialog(
@@ -917,9 +905,8 @@ class _SBBookingScreenState extends State<SBBookingScreen> {
           content: Column(mainAxisSize: MainAxisSize.min, children: [
             const Text('🎉', style: TextStyle(fontSize: 48)),
             const SizedBox(height: 12),
-            const Text('Session Booked!',
-                style: TextStyle(
-                    fontSize: 18, fontWeight: FontWeight.w700, color: SBColors.text)),
+            const Text('Session Booked!', style: TextStyle(
+                fontSize: 18, fontWeight: FontWeight.w700, color: SBColors.text)),
             const SizedBox(height: 8),
             Text(
               'Your session with ${widget.tutor.name} has been confirmed.',
@@ -933,21 +920,21 @@ class _SBBookingScreenState extends State<SBBookingScreen> {
                 Navigator.pop(context);
                 Navigator.pop(context);
               },
-              child: const Text('Done',
-                  style: TextStyle(
-                      color: SBColors.brand, fontWeight: FontWeight.w700)),
+              child: const Text('Done', style: TextStyle(
+                  color: SBColors.brand, fontWeight: FontWeight.w700)),
             ),
           ],
         ),
       );
-    } catch (e) {
+    } catch (e, st) {
+      dev.log('[SBTutors] _confirmBooking error: $e', stackTrace: st);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Booking failed: ${e.toString()}'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Booking failed: ${e.toString()}'),
+        backgroundColor: Colors.red,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -956,7 +943,6 @@ class _SBBookingScreenState extends State<SBBookingScreen> {
   @override
   Widget build(BuildContext context) {
     final tutor = widget.tutor;
-
     return Scaffold(
       backgroundColor: SBColors.surface2,
       appBar: AppBar(
@@ -966,14 +952,13 @@ class _SBBookingScreenState extends State<SBBookingScreen> {
           icon: const Icon(Icons.arrow_back_ios_new, size: 18, color: SBColors.text),
           onPressed: () => Navigator.pop(context),
         ),
-        title: const Text('Book a Session',
-            style: TextStyle(
-                fontSize: 16, fontWeight: FontWeight.w700, color: SBColors.text)),
+        title: const Text('Book a Session', style: TextStyle(
+            fontSize: 16, fontWeight: FontWeight.w700, color: SBColors.text)),
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // ── Tutor summary card ──────────────────────────
+          // Tutor summary card
           Container(
             padding: const EdgeInsets.all(14),
             decoration: SBTheme.card,
@@ -982,18 +967,14 @@ class _SBBookingScreenState extends State<SBBookingScreen> {
                 width: 54, height: 54,
                 decoration: BoxDecoration(
                   gradient: LinearGradient(colors: tutor.gradient),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Center(
-                    child: Text(tutor.emoji, style: const TextStyle(fontSize: 24))),
+                  borderRadius: BorderRadius.circular(16)),
+                child: Center(child: Text(tutor.emoji,
+                    style: const TextStyle(fontSize: 24))),
               ),
               const SizedBox(width: 12),
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(tutor.name,
-                    style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: SBColors.text)),
+                Text(tutor.name, style: const TextStyle(
+                    fontSize: 14, fontWeight: FontWeight.w600, color: SBColors.text)),
                 Text('${tutor.subject} Tutor',
                     style: const TextStyle(fontSize: 11, color: SBColors.text2)),
                 const SizedBox(height: 4),
@@ -1001,19 +982,18 @@ class _SBBookingScreenState extends State<SBBookingScreen> {
                   [
                     if (tutor.hourlyRate > 0)
                       '\$${tutor.hourlyRate.toStringAsFixed(0)}/hr',
-                    if (tutor.rating > 0) '⭐ ${tutor.rating.toStringAsFixed(1)}',
+                    if (tutor.rating > 0)
+                      '⭐ ${tutor.rating.toStringAsFixed(1)}',
                   ].join('  ·  '),
                   style: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: SBColors.brand),
+                      fontSize: 11, fontWeight: FontWeight.w600, color: SBColors.brand),
                 ),
               ]),
             ]),
           ),
           const SizedBox(height: 20),
 
-          // ── Date picker ─────────────────────────────────
+          // Date picker
           const _BookLabel('SELECT DATE'),
           const SizedBox(height: 10),
           SizedBox(
@@ -1034,112 +1014,91 @@ class _SBBookingScreenState extends State<SBBookingScreen> {
                         color: _selDay == i ? SBColors.brand : SBColors.border,
                         width: 1.5),
                   ),
-                  child: Center(
-                    child: Text(_days[i],
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: _selDay == i ? Colors.white : SBColors.text2,
-                            height: 1.5)),
-                  ),
+                  child: Center(child: Text(_days[i],
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontSize: 11, fontWeight: FontWeight.w600,
+                          color: _selDay == i ? Colors.white : SBColors.text2,
+                          height: 1.5))),
                 ),
               ),
             ),
           ),
           const SizedBox(height: 20),
 
-          // ── Time picker ─────────────────────────────────
+          // Time picker
           const _BookLabel('SELECT TIME'),
           const SizedBox(height: 10),
           Wrap(
             spacing: 8, runSpacing: 8,
-            children: List.generate(
-              _times.length,
-              (i) => GestureDetector(
-                onTap: () => setState(() => _selTime = i),
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 150),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  decoration: BoxDecoration(
-                    color: _selTime == i ? SBColors.brand : Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                        color: _selTime == i ? SBColors.brand : SBColors.border,
-                        width: 1.5),
-                  ),
-                  child: Text(_times[i],
-                      style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: _selTime == i ? Colors.white : SBColors.text2)),
+            children: List.generate(_times.length, (i) => GestureDetector(
+              onTap: () => setState(() => _selTime = i),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 150),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                decoration: BoxDecoration(
+                  color: _selTime == i ? SBColors.brand : Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                      color: _selTime == i ? SBColors.brand : SBColors.border,
+                      width: 1.5),
                 ),
+                child: Text(_times[i], style: TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w600,
+                    color: _selTime == i ? Colors.white : SBColors.text2)),
               ),
-            ),
+            )),
           ),
           const SizedBox(height: 20),
 
-          // ── Mode picker ─────────────────────────────────
+          // Mode picker
           const _BookLabel('SESSION MODE'),
           const SizedBox(height: 10),
-          Row(
-            children: ['Online', 'In-person'].map((m) => Expanded(
-              child: GestureDetector(
-                onTap: () => setState(() => _mode = m),
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 150),
-                  margin: const EdgeInsets.only(right: 8),
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  decoration: BoxDecoration(
-                    color: _mode == m ? SBColors.brand : Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                        color: _mode == m ? SBColors.brand : SBColors.border,
-                        width: 1.5),
-                  ),
-                  child: Center(
-                    child: Text(m,
-                        style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: _mode == m ? Colors.white : SBColors.text2)),
-                  ),
+          Row(children: ['Online', 'In-person'].map((m) => Expanded(
+            child: GestureDetector(
+              onTap: () => setState(() => _mode = m),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 150),
+                margin: const EdgeInsets.only(right: 8),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                decoration: BoxDecoration(
+                  color: _mode == m ? SBColors.brand : Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                      color: _mode == m ? SBColors.brand : SBColors.border,
+                      width: 1.5),
                 ),
+                child: Center(child: Text(m, style: TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w600,
+                    color: _mode == m ? Colors.white : SBColors.text2))),
               ),
-            )).toList(),
-          ),
+            ),
+          )).toList()),
           const SizedBox(height: 20),
 
-          // ── Total ───────────────────────────────────────
+          // Total
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-                color: SBColors.brandPale,
-                borderRadius: BorderRadius.circular(14)),
+                color: SBColors.brandPale, borderRadius: BorderRadius.circular(14)),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text('Session Total',
-                    style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: SBColors.text)),
+                const Text('Session Total', style: TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w600, color: SBColors.text)),
                 Text(
                   tutor.hourlyRate > 0
                       ? '\$${tutor.hourlyRate.toStringAsFixed(2)}'
                       : 'Free',
                   style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                      color: SBColors.brand),
+                      fontSize: 16, fontWeight: FontWeight.w700, color: SBColors.brand),
                 ),
               ],
             ),
           ),
           const SizedBox(height: 16),
 
-          // ── Confirm button ──────────────────────────────
+          // Confirm button
           GestureDetector(
             onTap: _loading ? null : _confirmBooking,
             child: AnimatedContainer(
@@ -1147,29 +1106,20 @@ class _SBBookingScreenState extends State<SBBookingScreen> {
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 15),
               decoration: BoxDecoration(
-                color: _loading
-                    ? SBColors.brand.withOpacity(0.6)
-                    : SBColors.brand,
+                color: _loading ? SBColors.brand.withOpacity(0.6) : SBColors.brand,
                 borderRadius: BorderRadius.circular(16),
                 boxShadow: [
-                  BoxShadow(
-                    color: SBColors.brand.withOpacity(0.3),
-                    blurRadius: 20,
-                    offset: const Offset(0, 6),
-                  ),
+                  BoxShadow(color: SBColors.brand.withOpacity(0.3),
+                      blurRadius: 20, offset: const Offset(0, 6)),
                 ],
               ),
               child: Center(
                 child: _loading
-                    ? const SizedBox(
-                        width: 20, height: 20,
+                    ? const SizedBox(width: 20, height: 20,
                         child: CircularProgressIndicator(
                             color: Colors.white, strokeWidth: 2))
-                    : const Text('✅  Confirm Booking',
-                        style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white)),
+                    : const Text('✅  Confirm Booking', style: TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white)),
               ),
             ),
           ),
@@ -1184,12 +1134,7 @@ class _BookLabel extends StatelessWidget {
   final String text;
   const _BookLabel(this.text);
   @override
-  Widget build(BuildContext context) => Text(
-        text,
-        style: const TextStyle(
-            fontSize: 10,
-            fontWeight: FontWeight.w700,
-            color: SBColors.text3,
-            letterSpacing: 1),
-      );
+  Widget build(BuildContext context) => Text(text, style: const TextStyle(
+      fontSize: 10, fontWeight: FontWeight.w700,
+      color: SBColors.text3, letterSpacing: 1));
 }
