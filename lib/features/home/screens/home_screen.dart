@@ -1,71 +1,44 @@
 // ============================================================
-//  CampusBuddy — home_screen.dart  (FULLY INTERACTIVE)
+//  CampusBuddy — home_screen.dart  (API-INTEGRATED)
 //  lib/features/home/screens/home_screen.dart
 //
-//  CHANGE FROM PREVIOUS VERSION:
+//  Changes from previous version:
 //  ─────────────────────────────────────────────────────────
-//  • Removed _ProfileSheet bottom sheet entirely
-//  • Removed _PTile helper widget
-//  • _showProfile() now pushes ProfileScreen directly
-//  • Added import for profile_screen.dart
-//  ─────────────────────────────────────────────────────────
+//  • REMOVED  Quick Actions section entirely
+//  • REMOVED  Near Campus (HousingStrip) section
+//  • REMOVED  Upcoming Events strip section
+//  • RENAMED  "Recent Activity" → "🔔 Notifications"
+//  • FETCHES  profile name from GET /api/v1/profiles/me/
+//  • FETCHES  live stat counts from study / market /
+//             housing / events APIs
+//  • FETCHES  featured event from GET /api/v1/events/
+//             (prefers is_featured=true, falls back to first)
+//  • FETCHES  notifications from GET /api/v1/profiles/notifications/
+//  • RSVP     calls POST /api/v1/events/{id}/rsvp/
+//  • Mark-read calls POST /api/v1/profiles/notifications/{id}/read/
 //
-//  Navigation wiring:
-//   ✅  Bottom nav tab 1 (📚 Study)     → pushes StudyBuddyHome
-//   ✅  Bottom nav tab 2 (🛒 Market)    → pushes CampusMarketHome
-//   ✅  Bottom nav tab 3 (🏠 Housing)   → pushes HousingHubHome
-//   ✅  Bottom nav tab 4 (🎉 Events)    → pushes EventBoardHome
-//   ✅  👤 Profile icon                 → pushes ProfileScreen
-//   ✅  Module tile "StudyBuddy"        → pushes StudyBuddyHome
-//   ✅  Module tile "CampusMarket"      → pushes CampusMarketHome
-//   ✅  Module tile "HousingHub"        → pushes HousingHubHome
-//   ✅  Module tile "EventBoard"        → pushes EventBoardHome
-//   ✅  Quick-action "Find Tutor"       → pushes StudyBuddyHome
-//   ✅  Quick-action "Post Item"        → pushes CampusMarketHome
-//   ✅  Quick-action "Find Room"        → pushes HousingHubHome
-//   ✅  Quick-action "RSVP Event"       → pushes EventBoardHome
-//   ✅  Stat chip "Study Groups"        → pushes StudyBuddyHome
-//   ✅  Stat chip "New Listings"        → pushes CampusMarketHome
-//   ✅  Stat chip "Housing Alerts"      → pushes HousingHubHome
-//   ✅  Stat chip "Events Today"        → pushes EventBoardHome
-//   ✅  Search "Find a Tutor"           → pushes StudyBuddyHome
-//   ✅  Search "Browse Market"          → pushes CampusMarketHome
-//   ✅  Search "Search Rooms"           → pushes HousingHubHome
-//   ✅  Search "Upcoming Events"        → pushes EventBoardHome
-//   ✅  Activity feed rows              → push their module screen
-//   ✅  "Near Campus" See all →         → pushes HousingHubHome
-//   ✅  "Upcoming Events" Calendar →    → pushes EventBoardHome
-//   ✅  Housing card "Contact Agent"    → pushes HousingHubHome
+//  Navigation wiring (unchanged):
+//   ✅  Bottom nav tab 1 (📚 Study)  → StudyBuddyHome
+//   ✅  Bottom nav tab 2 (🛒 Market) → CampusMarketHome
+//   ✅  Bottom nav tab 3 (🏠 Housing)→ HousingHubHome
+//   ✅  Bottom nav tab 4 (🎉 Events) → EventBoardHome
+//   ✅  👤 Profile icon              → ProfileScreen
+//   ✅  Module tiles                 → their respective screens
+//   ✅  Stat chips                   → their respective screens
+//   ✅  Search quick-jump            → their respective screens
+//   ✅  Notification rows            → module screen by category
 // ============================================================
 
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-// ── StudyBuddy module ─────────────────────────────────────────
 import '../../study_buddy/study_buddy.dart';
-
-// ── CampusMarket module ───────────────────────────────────────
 import '../../campus_market/campus_market.dart';
-
-// ── Housing module ────────────────────────────────────────────
 import '../../housing_hub/housing.dart';
-
-// ── Events module ─────────────────────────────────────────────
 import '../../event_board/event.dart';
-
-// ── Profile screen ────────────────────────────────────────────
-// FILE LOCATION:
-//   lib/features/profile/screens/profile_screen.dart
-//
-// HOW TO PLACE IT:
-//   1. From your project root, run:
-//        mkdir -p lib/features/profile/screens
-//   2. Copy profile_screen.dart into that folder.
-//      The class inside must be named exactly: ProfileScreen
-//      with a const constructor: const ProfileScreen({super.key});
-//
-//   That's it — this import resolves automatically.
 import '../../profile/screens/profile_screen.dart';
+import '../../../core/api_client.dart';
 
 // ─────────────────────────────────────────────────────────────
 //  BRAND COLOURS
@@ -76,7 +49,6 @@ class _C {
   static const brandPale  = Color(0xFFEEF1FD);
   static const terra      = Color(0xFFE07A5F);
   static const terraD     = Color(0xFFC4674E);
-  static const terraPale  = Color(0xFFFDF0EC);
   static const violet     = Color(0xFF7C3AED);
   static const violetPale = Color(0xFFF5F3FF);
   static const green      = Color(0xFF10B981);
@@ -90,120 +62,176 @@ class _C {
   static const text2      = Color(0xFF555577);
   static const text3      = Color(0xFF9999BB);
   static const border     = Color(0xFFE1E5F7);
+  static const shimmer    = Color(0xFFE8EAF6);
 }
 
 // ─────────────────────────────────────────────────────────────
-//  DATA MODELS
+//  API MODELS
 // ─────────────────────────────────────────────────────────────
-class _StatData {
-  final String emoji, value, label;
-  final Color color;
-  final int navTab;
-  const _StatData(this.emoji, this.value, this.label, this.color, this.navTab);
+
+/// Parses a notification from /api/v1/profile/notifications/
+class _ApiNotification {
+  final String id;
+  final String title;
+  final String body;
+  final String timeDisplay;
+  final String category; // 'study' | 'market' | 'housing' | 'events' | other
+  bool isRead;
+
+  _ApiNotification({
+    required this.id,
+    required this.title,
+    required this.body,
+    required this.timeDisplay,
+    required this.category,
+    required this.isRead,
+  });
+
+  factory _ApiNotification.fromJson(Map<String, dynamic> j) {
+    return _ApiNotification(
+      id:          j['id']?.toString() ?? '',
+      title:       j['title']?.toString() ??
+                   j['message']?.toString() ??
+                   'Notification',
+      body:        j['body']?.toString() ??
+                   j['description']?.toString() ?? '',
+      timeDisplay: _relativeTime(j['created_at']?.toString() ?? ''),
+      category:    (j['category'] ?? j['module'] ?? j['type'] ?? '').toString().toLowerCase(),
+      isRead:      j['is_read'] as bool? ?? j['read'] as bool? ?? false,
+    );
+  }
+
+  static String _relativeTime(String raw) {
+    if (raw.isEmpty) return '';
+    try {
+      final dt   = DateTime.parse(raw).toLocal();
+      final diff = DateTime.now().difference(dt);
+      if (diff.inMinutes < 1)  return 'Just now';
+      if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+      if (diff.inHours   < 24) return '${diff.inHours}h ago';
+      return '${diff.inDays}d ago';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  String get emoji {
+    switch (category) {
+      case 'study':   return '📚';
+      case 'market':  return '🛒';
+      case 'housing': return '🏠';
+      case 'events':  return '🎉';
+      default:        return '🔔';
+    }
+  }
+
+  Color get iconBg {
+    switch (category) {
+      case 'study':   return _C.brandPale;
+      case 'market':  return const Color(0xFFFDF0EC);
+      case 'housing': return _C.greenPale;
+      case 'events':  return _C.violetPale;
+      default:        return const Color(0xFFFFFBEB);
+    }
+  }
+
+  Color get dotColor {
+    switch (category) {
+      case 'study':   return _C.brand;
+      case 'market':  return _C.terra;
+      case 'housing': return _C.green;
+      case 'events':  return _C.violet;
+      default:        return _C.amber;
+    }
+  }
+
+  String get sourceLabel {
+    switch (category) {
+      case 'study':   return 'StudyBuddy';
+      case 'market':  return 'CampusMarket';
+      case 'housing': return 'HousingHub';
+      case 'events':  return 'EventBoard';
+      default:        return 'CampusBuddy';
+    }
+  }
 }
 
-class _ActionData {
-  final String emoji, label;
-  final Color bgColor;
-  final int navTab;
-  const _ActionData(this.emoji, this.label, this.bgColor, this.navTab);
+/// Parses a single event from /api/v1/events/ results list.
+class _ApiFeaturedEvent {
+  final String id;
+  final String title;
+  final String dateDisplay;
+  final String location;
+  final int    attendingCount;
+  bool isGoing;
+
+  _ApiFeaturedEvent({
+    required this.id,
+    required this.title,
+    required this.dateDisplay,
+    required this.location,
+    required this.attendingCount,
+    this.isGoing = false,
+  });
+
+  factory _ApiFeaturedEvent.fromJson(Map<String, dynamic> j) {
+    // ── Date formatting ──────────────────────────────────
+    String dateDisplay = '';
+    final rawDate = j['date']?.toString() ??
+                    j['start_date']?.toString() ??
+                    j['start_time']?.toString() ?? '';
+    if (rawDate.isNotEmpty) {
+      try {
+        final dt     = DateTime.parse(rawDate).toLocal();
+        const months = ['Jan','Feb','Mar','Apr','May','Jun',
+                         'Jul','Aug','Sep','Oct','Nov','Dec'];
+        const wdays  = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+        final h      = dt.hour > 12 ? dt.hour - 12 : (dt.hour == 0 ? 12 : dt.hour);
+        final ampm   = dt.hour >= 12 ? 'PM' : 'AM';
+        final mm     = dt.minute.toString().padLeft(2, '0');
+        dateDisplay  = '${wdays[dt.weekday - 1]}, '
+                       '${months[dt.month - 1]} ${dt.day} · $h:$mm $ampm';
+      } catch (_) {
+        dateDisplay = rawDate;
+      }
+    }
+
+    return _ApiFeaturedEvent(
+      id:             j['id']?.toString() ?? '',
+      title:          j['title']?.toString() ?? 'Upcoming Event',
+      dateDisplay:    dateDisplay,
+      location:       j['location']?.toString() ??
+                      j['venue']?.toString() ?? '',
+      attendingCount: (j['attendees_count'] ??
+                       j['rsvp_count'] ??
+                       j['going_count'] ?? 0) as int,
+      isGoing:        j['user_rsvp']   as bool? ??
+                      j['is_attending'] as bool? ??
+                      j['is_going']    as bool? ?? false,
+    );
+  }
 }
 
-class _ModuleData {
-  final String emoji, name, sub, badge;
-  final Color colorA, colorB;
-  final int navTab;
-  const _ModuleData(this.emoji, this.name, this.sub, this.badge,
+// ─────────────────────────────────────────────────────────────
+//  MODULE VISUAL CONFIG  (badges are computed from live counts)
+// ─────────────────────────────────────────────────────────────
+class _ModuleCfg {
+  final String emoji, name, sub, countSuffix;
+  final Color  colorA, colorB;
+  final int    navTab;
+  const _ModuleCfg(this.emoji, this.name, this.sub, this.countSuffix,
       this.colorA, this.colorB, this.navTab);
 }
 
-class _HousingData {
-  final String emoji, type, title, price, distance;
-  final Color gradA, gradB, typeColor;
-  const _HousingData(this.emoji, this.type, this.gradA, this.gradB,
-      this.typeColor, this.title, this.price, this.distance);
-}
-
-class _EventData {
-  final String emoji, category, date, title, attending;
-  final Color catColor, gradA, gradB, rsvpColor;
-  const _EventData(this.emoji, this.category, this.catColor, this.date,
-      this.gradA, this.gradB, this.title, this.attending, this.rsvpColor);
-}
-
-class ActivityItem {
-  final String emoji, title, time;
-  final Color iconBg, dotColor;
-  bool unread;
-  ActivityItem(this.emoji, this.iconBg, this.dotColor,
-      this.title, this.time, this.unread);
-}
-
-// ─────────────────────────────────────────────────────────────
-//  STATIC DATA
-// ─────────────────────────────────────────────────────────────
-const _kStats = [
-  _StatData('📚', '4',  'Study Groups',   _C.brand,  1),
-  _StatData('🛒', '12', 'New Listings',   _C.terra,  2),
-  _StatData('🏠', '7',  'Housing Alerts', _C.green,  3),
-  _StatData('🎉', '3',  'Events Today',   _C.violet, 4),
-];
-
-const _kActions = [
-  _ActionData('📚', 'Find Tutor', _C.brandPale,  1),
-  _ActionData('➕', 'Post Item',  _C.terraPale,  2),
-  _ActionData('🏠', 'Find Room',  _C.greenPale,  3),
-  _ActionData('🎉', 'RSVP Event', _C.violetPale, 4),
-];
-
 const _kModules = [
-  _ModuleData('📚', 'StudyBuddy',   'Tutors · Groups · Q&A',    '4 groups active',
-      _C.brand,  _C.brandD,          1),
-  _ModuleData('🛒', 'CampusMarket', 'Buy · Sell · Donate',       '12 new listings',
-      _C.terra,  _C.terraD,          2),
-  _ModuleData('🏠', 'HousingHub',   'Rooms · Roommates · Map',   '7 new alerts',
-      _C.green,  Color(0xFF0D9488),  3),
-  _ModuleData('🎉', 'EventBoard',   'Events · RSVP · Calendar',  '3 events today',
-      _C.violet, Color(0xFF5B21B6),  4),
-];
-
-const _kHousings = [
-  _HousingData('🏠', 'Apartment',   Color(0xFFFDF0EC), Color(0xFFF4C5B5),
-      _C.terraD, '2BR · Westlands',    'KES 28,000', '📍 1.2km from UoN'),
-  _HousingData('🛏', 'Single Room', Color(0xFFECFDF5), Color(0xFFA7F3D0),
-      _C.green,  'Single · Parklands', 'KES 9,500',  '📍 0.8km from UoN'),
-  _HousingData('🏘', 'Shared',      Color(0xFFEEF1FD), Color(0xFFC7D2FA),
-      _C.brand,  'Shared · CBD',       'KES 6,000',  '📍 2.1km from UoN'),
-];
-
-const _kEvents = [
-  _EventData('🎓', '📚 Academic', _C.brand,         'Feb 18 · 2PM',
-      Color(0xFFEDE9FE), Color(0xFFC4B5FD),
-      'Final Year Project Symposium',   '82 attending',  _C.violet),
-  _EventData('⚽', '⚽ Sports',   _C.green,         'Feb 19 · 3PM',
-      Color(0xFFECFDF5), Color(0xFF6EE7B7),
-      'Inter-Faculty Football Finals',  '184 attending', _C.green),
-  _EventData('🎭', '🎭 Cultural', Color(0xFFEC4899), 'Feb 18 · 6PM',
-      Color(0xFFFDF2F8), Color(0xFFFBCFE8),
-      'Afrobeats Night — Cultural Eve', '156 attending', Color(0xFFEC4899)),
-];
-
-List<ActivityItem> _buildActivities() => [
-  ActivityItem('📚', _C.brandPale,       _C.brand,
-      'New tutor available — Mathematics (Dr. Njoroge)',
-      '5 min ago · StudyBuddy', true),
-  ActivityItem('🛒', _C.terraPale,       _C.terra,
-      'Your HP Laptop Charger got an offer — KES 1,200',
-      '23 min ago · CampusMarket', true),
-  ActivityItem('🏠', _C.greenPale,       _C.green,
-      'New 2BR apartment match in Westlands — KES 26k',
-      '1h ago · HousingHub', true),
-  ActivityItem('🎉', _C.violetPale,      _C.violet,
-      '⏰ Reminder: Hackathon starts tomorrow at 8AM!',
-      '2h ago · EventBoard', false),
-  ActivityItem('💬', Color(0xFFFFFBEB),  _C.amber,
-      'Kevin O. matched as a potential roommate — 84%',
-      '3h ago · HousingHub', false),
+  _ModuleCfg('📚', 'StudyBuddy',   'Tutors · Groups · Q&A',   'groups',
+      _C.brand,  _C.brandD,               1),
+  _ModuleCfg('🛒', 'CampusMarket', 'Buy · Sell · Donate',      'listings',
+      _C.terra,  _C.terraD,               2),
+  _ModuleCfg('🏠', 'HousingHub',   'Rooms · Roommates · Map',  'alerts',
+      _C.green,  Color(0xFF0D9488),        3),
+  _ModuleCfg('🎉', 'EventBoard',   'Events · RSVP · Calendar', 'events',
+      _C.violet, Color(0xFF5B21B6),        4),
 ];
 
 // ─────────────────────────────────────────────────────────────
@@ -216,48 +244,269 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  int  _navIndex      = 0;
-  bool _featuredGoing = false;
-  late final List<ActivityItem> _activities;
+  int _navIndex = 0;
 
+  // ── Profile ──────────────────────────────────────────────
+  String _profileName    = '';
+  bool   _profileLoading = true;
+
+  // ── Live stat counts ─────────────────────────────────────
+  String _studyCount   = '–';
+  String _marketCount  = '–';
+  String _housingCount = '–';
+  String _eventsCount  = '–';
+
+  // ── Featured event ────────────────────────────────────────
+  _ApiFeaturedEvent? _featuredEvent;
+  bool _featuredLoading = true;
+
+  // ── Notifications ─────────────────────────────────────────
+  List<_ApiNotification> _notifications    = [];
+  bool                   _notifsLoading    = true;
+  int                    _unreadCount      = 0;
+
+  // ─────────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
-    _activities = _buildActivities();
+    _fetchAll();
   }
 
-  // ── navigation helpers ───────────────────────────────────
+  Future<void> _fetchAll() async {
+    await Future.wait([
+      _fetchProfile(),
+      _fetchStudyCount(),
+      _fetchMarketCount(),
+      _fetchHousingCount(),
+      _fetchEventsCount(),
+      _fetchFeaturedEvent(),
+      _fetchNotifications(),
+    ]);
+  }
 
+  // ── API FETCH METHODS ──────────────────────────────────────
+
+  Future<void> _fetchProfile() async {
+    try {
+      final res = await ApiClient.get('/api/v1/profile/me/');
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final j    = jsonDecode(res.body) as Map<String, dynamic>;
+        final full = j['full_name']?.toString();
+        final computed = '${j['first_name'] ?? ''} ${j['last_name'] ?? ''}'.trim();
+        setState(() {
+          _profileName    = (full?.isNotEmpty == true ? full! : computed).isNotEmpty
+              ? (full?.isNotEmpty == true ? full! : computed)
+              : 'Student';
+          _profileLoading = false;
+        });
+      } else {
+        setState(() => _profileLoading = false);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _profileLoading = false);
+    }
+  }
+
+  /// Helper: extract count from typical DRF paginated response.
+  static int _extractCount(dynamic decoded) {
+    if (decoded is Map) {
+      final c = decoded['count'];
+      if (c != null) return c as int;
+      final r = decoded['results'];
+      if (r is List) return r.length;
+    }
+    if (decoded is List) return decoded.length;
+    return 0;
+  }
+
+  Future<void> _fetchStudyCount() async {
+    try {
+      final res = await ApiClient.get('api/study-buddy/groups/');
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final count = _extractCount(jsonDecode(res.body));
+        setState(() => _studyCount = count.toString());
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _fetchMarketCount() async {
+    try {
+      final res = await ApiClient.get('/api/v1/market/listings/');
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final count = _extractCount(jsonDecode(res.body));
+        setState(() => _marketCount = count.toString());
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _fetchHousingCount() async {
+    try {
+      final res = await ApiClient.get('/api/v1/housing/alerts/');
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final count = _extractCount(jsonDecode(res.body));
+        setState(() => _housingCount = count.toString());
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _fetchEventsCount() async {
+    try {
+      final res = await ApiClient.get('/api/v1/events/');
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final count = _extractCount(jsonDecode(res.body));
+        setState(() => _eventsCount = count.toString());
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _fetchFeaturedEvent() async {
+    try {
+      final res = await ApiClient.get('/api/v1/events/');
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final decoded = jsonDecode(res.body);
+        final List<dynamic> results = decoded is Map
+            ? ((decoded['results'] as List?) ?? [])
+            : (decoded is List ? decoded : []);
+
+        if (results.isNotEmpty) {
+          // Prefer an event explicitly flagged as featured
+          final raw = results.firstWhere(
+            (e) => e is Map && (e['is_featured'] == true || e['featured'] == true),
+            orElse: () => results.first,
+          ) as Map<String, dynamic>;
+          setState(() {
+            _featuredEvent    = _ApiFeaturedEvent.fromJson(raw);
+            _featuredLoading  = false;
+          });
+        } else {
+          setState(() => _featuredLoading = false);
+        }
+      } else {
+        setState(() => _featuredLoading = false);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _featuredLoading = false);
+    }
+  }
+
+  Future<void> _fetchNotifications() async {
+    try {
+      final res = await ApiClient.get('/api/v1/profile/notifications/');
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final decoded = jsonDecode(res.body);
+        final List<dynamic> raw = decoded is Map
+            ? ((decoded['results'] as List?) ?? [])
+            : (decoded is List ? decoded : []);
+
+        final notifs = raw
+            .map((n) => _ApiNotification.fromJson(n as Map<String, dynamic>))
+            .toList();
+        setState(() {
+          _notifications = notifs;
+          _unreadCount   = notifs.where((n) => !n.isRead).length;
+          _notifsLoading = false;
+        });
+      } else {
+        setState(() => _notifsLoading = false);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _notifsLoading = false);
+    }
+  }
+
+  // ── RSVP featured event ──────────────────────────────────
+  Future<void> _rsvpFeaturedEvent() async {
+    if (_featuredEvent == null) return;
+    HapticFeedback.mediumImpact();
+    // Optimistic toggle
+    setState(() => _featuredEvent!.isGoing = !_featuredEvent!.isGoing);
+    final going = _featuredEvent!.isGoing;
+    _snack(going
+        ? '✅ You\'re going to ${_featuredEvent!.title}!'
+        : 'RSVP cancelled',
+        color: _C.violet);
+    try {
+      await ApiClient.post('/api/v1/events/${_featuredEvent!.id}/rsvp/');
+    } catch (_) {
+      // Leave optimistic state — UX over strict consistency
+    }
+  }
+
+  // ── Mark single notification read ─────────────────────────
+  Future<void> _markNotificationRead(int i) async {
+    final notif = _notifications[i];
+    if (notif.isRead) {
+      _snack('Already read', color: _C.text3);
+      return;
+    }
+    // Optimistic
+    setState(() {
+      notif.isRead = true;
+      _unreadCount = _notifications.where((n) => !n.isRead).length;
+    });
+    // Route to relevant module
+    _routeByCategory(notif.category);
+    // Fire API in background
+    ApiClient.post('/api/v1/profiles/notifications/${notif.id}/read/')
+        .catchError((_) {});
+  }
+
+  // ── Mark ALL notifications read ───────────────────────────
+  void _markAllNotificationsRead() {
+    final unread = _notifications.where((n) => !n.isRead).toList();
+    setState(() {
+      for (final n in _notifications) n.isRead = true;
+      _unreadCount = 0;
+    });
+    for (final n in unread) {
+      ApiClient.post('/api/v1/profiles/notifications/${n.id}/read/')
+          .catchError((_) {});
+    }
+  }
+
+  void _routeByCategory(String cat) {
+    switch (cat) {
+      case 'study':   _openStudyBuddy();   break;
+      case 'market':  _openCampusMarket(); break;
+      case 'housing': _openHousingHub();   break;
+      case 'events':  _openEventBoard();   break;
+    }
+  }
+
+  // ── Navigation helpers ────────────────────────────────────
   void _openStudyBuddy() {
     HapticFeedback.mediumImpact();
-    Navigator.push(context,
-        MaterialPageRoute(builder: (_) => StudyBuddyHome()));
+    Navigator.push(context, MaterialPageRoute(builder: (_) => StudyBuddyHome()));
   }
 
   void _openCampusMarket() {
     HapticFeedback.mediumImpact();
-    Navigator.push(context,
-        MaterialPageRoute(builder: (_) => CampusMarketHome()));
+    Navigator.push(context, MaterialPageRoute(builder: (_) => CampusMarketHome()));
   }
 
   void _openHousingHub() {
     HapticFeedback.mediumImpact();
-    Navigator.push(context,
-        MaterialPageRoute(builder: (_) => HousingHubHome()));
+    Navigator.push(context, MaterialPageRoute(builder: (_) => HousingHubHome()));
   }
 
   void _openEventBoard() {
     HapticFeedback.mediumImpact();
-    Navigator.push(context,
-        MaterialPageRoute(builder: (_) => EventBoardHome()));
+    Navigator.push(context, MaterialPageRoute(builder: (_) => EventBoardHome()));
   }
 
-  // ── CHANGED: was _showProfile() opening a bottom sheet ──
-  // Now pushes the full ProfileScreen as a new route.
   void _openProfile() {
     HapticFeedback.mediumImpact();
-    Navigator.push(context,
-        MaterialPageRoute(builder: (_) => const ProfileScreen()));
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const ProfileScreen()),
+    ).then((_) => _fetchProfile()); // refresh name after edit
   }
 
   void _handleTab(int tab, {String label = ''}) {
@@ -287,29 +536,17 @@ class _HomeScreenState extends State<HomeScreen> {
       ));
   }
 
-  void _markRead(int i) {
-    if (!_activities[i].unread) {
-      _snack('Already read', color: _C.text3);
-      return;
-    }
-    final time = _activities[i].time;
-    setState(() => _activities[i].unread = false);
-    if      (time.contains('StudyBuddy'))   _openStudyBuddy();
-    else if (time.contains('CampusMarket')) _openCampusMarket();
-    else if (time.contains('HousingHub'))   _openHousingHub();
-    else if (time.contains('EventBoard'))   _openEventBoard();
-    else _snack('Marked as read ✓');
-  }
-
-  void _showNotifications() {
+  void _showNotificationsSheet() {
     HapticFeedback.lightImpact();
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
       builder: (_) => _NotificationSheet(
-        activities: _activities,
-        onMarkAll: () =>
-            setState(() { for (final a in _activities) a.unread = false; }),
+        notifications: _notifications,
+        onMarkAll: () {
+          _markAllNotificationsRead();
+          // Sheet rebuilds via its own setState after callback
+        },
       ),
     );
   }
@@ -332,99 +569,85 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _showHousingDetail(_HousingData card) {
-    HapticFeedback.lightImpact();
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (_) => _HousingDetailSheet(
-        card: card,
-        onContact: _openHousingHub,
-      ),
-    );
-  }
-
-  // ── build ────────────────────────────────────────────────
+  // ── BUILD ─────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: _C.offWhite,
       extendBody: true,
-      body: CustomScrollView(
-        slivers: [
+      body: RefreshIndicator(
+        color: _C.brand,
+        onRefresh: _fetchAll,
+        child: CustomScrollView(
+          slivers: [
 
-          // 1. Header — profile icon now calls _openProfile()
-          SliverToBoxAdapter(
-            child: _Header(
-              onSearch:        _openSearch,
-              onNotifications: _showNotifications,
-              onProfile:       _openProfile,   // ← CHANGED
+            // 1. Header with live profile name
+            SliverToBoxAdapter(
+              child: _Header(
+                profileName:    _profileName,
+                profileLoading: _profileLoading,
+                unreadCount:    _unreadCount,
+                onSearch:        _openSearch,
+                onNotifications: _showNotificationsSheet,
+                onProfile:       _openProfile,
+              ),
             ),
-          ),
 
-          // 2. Quick stats
-          SliverToBoxAdapter(
-            child: _QuickStatsRow(
-                onTap: (tab) => _handleTab(tab)),
-          ),
-
-          // 3. Quick actions
-          _sec('⚡ Quick Actions'),
-          SliverToBoxAdapter(
-            child: _QuickActionsGrid(
-                onTap: (tab, label) => _handleTab(tab, label: label)),
-          ),
-
-          // 4. Module grid
-          _sec('🧭 Explore Modules', showMore: false),
-          SliverToBoxAdapter(
-            child: _ModuleGrid(
-                onTap: (tab, name) => _handleTab(tab, label: name)),
-          ),
-
-          // 5. Featured event
-          SliverToBoxAdapter(
-            child: _FeaturedEvent(
-              going: _featuredGoing,
-              onRsvp: () {
-                setState(() => _featuredGoing = !_featuredGoing);
-                HapticFeedback.mediumImpact();
-                _snack(_featuredGoing
-                    ? '✅ You\'re going to UoN Tech Hackathon!'
-                    : 'RSVP cancelled',
-                    color: _C.violet);
-              },
-              onDetail: () =>
-                  _snack('Opening event details…', color: _C.violet),
+            // 2. Quick stats — live counts
+            SliverToBoxAdapter(
+              child: _QuickStatsRow(
+                studyCount:   _studyCount,
+                marketCount:  _marketCount,
+                housingCount: _housingCount,
+                eventsCount:  _eventsCount,
+                onTap: (tab) => _handleTab(tab),
+              ),
             ),
-          ),
 
-          // 6. Housing strip
-          _sec('🏠 Near Campus',
-              moreLabel: 'See all →',
-              onMore: _openHousingHub),
-          SliverToBoxAdapter(
-            child: _HousingStrip(onTap: _showHousingDetail),
-          ),
+            // 3. Module grid — badges use live counts
+            _sec('🧭 Explore Modules', showMore: false),
+            SliverToBoxAdapter(
+              child: _ModuleGrid(
+                counts: [
+                  _studyCount,
+                  _marketCount,
+                  _housingCount,
+                  _eventsCount,
+                ],
+                onTap: (tab, name) => _handleTab(tab, label: name),
+              ),
+            ),
 
-          // 7. Events strip
-          _sec('🎉 Upcoming Events',
-              moreLabel: 'Calendar →',
-              onMore: _openEventBoard),
-          const SliverToBoxAdapter(child: _EventsStrip()),
+            // 4. Featured event (API)
+            if (_featuredLoading)
+              const SliverToBoxAdapter(child: _FeaturedSkeleton()),
+            if (!_featuredLoading && _featuredEvent != null)
+              SliverToBoxAdapter(
+                child: _FeaturedEventCard(
+                  event:    _featuredEvent!,
+                  onRsvp:   _rsvpFeaturedEvent,
+                  onDetail: _openEventBoard,
+                ),
+              ),
 
-          // 8. Activity feed
-          _sec('⚡ Recent Activity',
-              moreLabel: 'See all →',
-              onMore: () => _snack('Showing all activity…')),
-          SliverToBoxAdapter(
-            child: _ActivityFeed(
-                activities: _activities, onTap: _markRead),
-          ),
+            // 5. Notifications feed
+            _sec('🔔 Notifications',
+                moreLabel: 'See all →',
+                onMore: _showNotificationsSheet),
+            SliverToBoxAdapter(
+              child: _notifsLoading
+                  ? const _NotifsSkeleton()
+                  : _notifications.isEmpty
+                      ? const _EmptyNotifs()
+                      : _NotificationsFeed(
+                          notifications: _notifications,
+                          onTap: _markNotificationRead,
+                        ),
+            ),
 
-          const SliverToBoxAdapter(child: SizedBox(height: 110)),
-        ],
+            const SliverToBoxAdapter(child: SizedBox(height: 110)),
+          ],
+        ),
       ),
       bottomNavigationBar: _BottomNav(
         selected: _navIndex,
@@ -453,11 +676,18 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  1. HEADER
+//  1. HEADER  (profile name now dynamic)
 // ─────────────────────────────────────────────────────────────
 class _Header extends StatelessWidget {
+  final String      profileName;
+  final bool        profileLoading;
+  final int         unreadCount;
   final VoidCallback onSearch, onNotifications, onProfile;
+
   const _Header({
+    required this.profileName,
+    required this.profileLoading,
+    required this.unreadCount,
     required this.onSearch,
     required this.onNotifications,
     required this.onProfile,
@@ -499,8 +729,9 @@ class _Header extends StatelessWidget {
                   children: [
                     _LogoPill(),
                     _HeaderIcons(
+                      unreadCount:     unreadCount,
                       onNotifications: onNotifications,
-                      onProfile: onProfile,
+                      onProfile:       onProfile,
                     ),
                   ],
                 ),
@@ -510,12 +741,15 @@ class _Header extends StatelessWidget {
                         fontSize: 12,
                         color: Colors.white.withOpacity(0.65))),
                 const SizedBox(height: 2),
-                const Text('Sarah K. 👋',
-                    style: TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.w900,
-                        color: Colors.white,
-                        letterSpacing: -0.3)),
+                // ── Live profile name ─────────────────────
+                profileLoading
+                    ? _ShimmerLine(width: 140, height: 24)
+                    : Text('$profileName 👋',
+                        style: const TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.w900,
+                            color: Colors.white,
+                            letterSpacing: -0.3)),
                 const SizedBox(height: 14),
                 _SearchBarWidget(onTap: onSearch),
               ],
@@ -580,9 +814,13 @@ class _LogoPill extends StatelessWidget {
 }
 
 class _HeaderIcons extends StatelessWidget {
+  final int          unreadCount;
   final VoidCallback onNotifications, onProfile;
-  const _HeaderIcons(
-      {required this.onNotifications, required this.onProfile});
+  const _HeaderIcons({
+    required this.unreadCount,
+    required this.onNotifications,
+    required this.onProfile,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -591,28 +829,29 @@ class _HeaderIcons extends StatelessWidget {
         onTap: onNotifications,
         child: Stack(clipBehavior: Clip.none, children: [
           const Text('🔔', style: TextStyle(fontSize: 18)),
-          Positioned(
-            top: -4, right: -4,
-            child: Container(
-              width: 16, height: 16,
-              decoration: BoxDecoration(
-                  color: _C.coral,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: _C.brandD, width: 1.5)),
-              child: const Center(
-                child: Text('3',
-                    style: TextStyle(
+          if (unreadCount > 0)
+            Positioned(
+              top: -4, right: -4,
+              child: Container(
+                width: 16, height: 16,
+                decoration: BoxDecoration(
+                    color: _C.coral,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: _C.brandD, width: 1.5)),
+                child: Center(
+                  child: Text(
+                    unreadCount > 9 ? '9+' : unreadCount.toString(),
+                    style: const TextStyle(
                         fontSize: 8,
                         fontWeight: FontWeight.w800,
-                        color: Colors.white)),
+                        color: Colors.white),
+                  ),
+                ),
               ),
             ),
-          ),
         ]),
       ),
       const SizedBox(width: 8),
-      // ── CHANGED: onTap now calls _openProfile() which ────
-      // pushes ProfileScreen instead of a bottom sheet
       _HIconBtn(
         onTap: onProfile,
         child: const Text('👤', style: TextStyle(fontSize: 18)),
@@ -671,8 +910,7 @@ class _SearchBarWidget extends StatelessWidget {
                 style: TextStyle(fontSize: 13, color: _C.text3)),
           ),
           Container(
-            padding: const EdgeInsets.symmetric(
-                horizontal: 10, vertical: 5),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
             decoration: BoxDecoration(
                 color: _C.brand,
                 borderRadius: BorderRadius.circular(9)),
@@ -693,25 +931,40 @@ class _SearchBarWidget extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  2. QUICK STATS
+//  2. QUICK STATS ROW  (dynamic counts)
 // ─────────────────────────────────────────────────────────────
 class _QuickStatsRow extends StatelessWidget {
+  final String studyCount, marketCount, housingCount, eventsCount;
   final ValueChanged<int> onTap;
-  const _QuickStatsRow({required this.onTap});
+
+  const _QuickStatsRow({
+    required this.studyCount,
+    required this.marketCount,
+    required this.housingCount,
+    required this.eventsCount,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final items = [
+      (emoji: '📚', value: studyCount,   label: 'Study Groups',   color: _C.brand,  tab: 1),
+      (emoji: '🛒', value: marketCount,  label: 'New Listings',   color: _C.terra,  tab: 2),
+      (emoji: '🏠', value: housingCount, label: 'Housing Alerts', color: _C.green,  tab: 3),
+      (emoji: '🎉', value: eventsCount,  label: 'Events Today',   color: _C.violet, tab: 4),
+    ];
+
     return SizedBox(
       height: 72,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-        itemCount: _kStats.length,
+        itemCount: items.length,
         separatorBuilder: (_, __) => const SizedBox(width: 9),
         itemBuilder: (_, i) {
-          final s = _kStats[i];
+          final s = items[i];
           return GestureDetector(
-            onTap: () => onTap(s.navTab),
+            onTap: () => onTap(s.tab),
             child: Container(
               padding: const EdgeInsets.symmetric(
                   horizontal: 13, vertical: 10),
@@ -733,12 +986,14 @@ class _QuickStatsRow extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(s.value,
-                        style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w900,
-                            color: s.color,
-                            height: 1)),
+                    s.value == '–'
+                        ? _ShimmerLine(width: 24, height: 18)
+                        : Text(s.value,
+                            style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w900,
+                                color: s.color,
+                                height: 1)),
                     const SizedBox(height: 2),
                     Text(s.label,
                         style: const TextStyle(
@@ -796,80 +1051,13 @@ class _SectionLabel extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  3. QUICK ACTIONS
-// ─────────────────────────────────────────────────────────────
-class _QuickActionsGrid extends StatelessWidget {
-  final void Function(int tab, String label) onTap;
-  const _QuickActionsGrid({required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Row(
-        children: _kActions
-            .map((a) => Expanded(
-                  child: Padding(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 5),
-                    child: Material(
-                      color: _C.surf,
-                      borderRadius: BorderRadius.circular(16),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(16),
-                        onTap: () => onTap(a.navTab, a.label),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              vertical: 12, horizontal: 6),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(color: _C.border),
-                            boxShadow: [
-                              BoxShadow(
-                                  color:
-                                      _C.brand.withOpacity(0.06),
-                                  blurRadius: 8,
-                                  offset: const Offset(0, 2))
-                            ],
-                          ),
-                          child: Column(children: [
-                            Container(
-                              width: 40, height: 40,
-                              decoration: BoxDecoration(
-                                  color: a.bgColor,
-                                  borderRadius:
-                                      BorderRadius.circular(13)),
-                              child: Center(
-                                child: Text(a.emoji,
-                                    style: const TextStyle(
-                                        fontSize: 18)),
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            Text(a.label,
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w700,
-                                    color: _C.text2)),
-                          ]),
-                        ),
-                      ),
-                    ),
-                  ),
-                ))
-            .toList(),
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-//  4. MODULE GRID
+//  3. MODULE GRID  (badges show live counts)
 // ─────────────────────────────────────────────────────────────
 class _ModuleGrid extends StatelessWidget {
   final void Function(int tab, String name) onTap;
-  const _ModuleGrid({required this.onTap});
+  /// Counts in order: [study, market, housing, events]
+  final List<String> counts;
+  const _ModuleGrid({required this.onTap, required this.counts});
 
   @override
   Widget build(BuildContext context) {
@@ -882,126 +1070,118 @@ class _ModuleGrid extends StatelessWidget {
         mainAxisSpacing: 12,
         crossAxisSpacing: 12,
         childAspectRatio: 0.95,
-        children: _kModules
-            .map((m) => ClipRRect(
-                  borderRadius: BorderRadius.circular(22),
-                  child: Material(
-                    color: Colors.transparent,
-                    child: InkWell(
-                      onTap: () => onTap(m.navTab, m.name),
-                      splashColor:
-                          Colors.white.withOpacity(0.15),
-                      highlightColor:
-                          Colors.white.withOpacity(0.08),
-                      child: Container(
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: [m.colorA, m.colorB],
-                          ),
-                        ),
-                        child: Stack(children: [
-                          Positioned(
-                            top: -22, right: -22,
-                            child: Container(
-                              width: 90, height: 90,
-                              decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: Colors.white
-                                      .withOpacity(0.09)),
-                            ),
-                          ),
-                          Positioned(
-                            bottom: -14, left: -14,
-                            child: Container(
-                              width: 64, height: 64,
-                              decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: Colors.white
-                                      .withOpacity(0.06)),
-                            ),
-                          ),
-                          Positioned(
-                            top: 0, right: 0,
-                            child: Container(
-                              width: 26, height: 26,
-                              decoration: BoxDecoration(
-                                  color: Colors.white
-                                      .withOpacity(0.2),
-                                  borderRadius:
-                                      BorderRadius.circular(8)),
-                              child: const Center(
-                                child: Text('›',
-                                    style: TextStyle(
-                                        fontSize: 16,
-                                        color: Colors.white,
-                                        fontWeight:
-                                            FontWeight.w900)),
-                              ),
-                            ),
-                          ),
-                          Column(
-                            crossAxisAlignment:
-                                CrossAxisAlignment.start,
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 9, vertical: 3),
-                                decoration: BoxDecoration(
-                                  color: Colors.white
-                                      .withOpacity(0.22),
-                                  borderRadius:
-                                      BorderRadius.circular(20),
-                                ),
-                                child: Text(m.badge,
-                                    style: const TextStyle(
-                                        fontSize: 9,
-                                        fontWeight: FontWeight.w800,
-                                        color: Colors.white)),
-                              ),
-                              const Spacer(),
-                              Text(m.emoji,
-                                  style: const TextStyle(
-                                      fontSize: 32)),
-                              const SizedBox(height: 6),
-                              Text(m.name,
-                                  style: const TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w900,
-                                      color: Colors.white,
-                                      letterSpacing: -0.1)),
-                              const SizedBox(height: 2),
-                              Text(m.sub,
-                                  style: TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w500,
-                                      color: Colors.white
-                                          .withOpacity(0.72))),
-                            ],
-                          ),
-                        ]),
-                      ),
+        children: List.generate(_kModules.length, (i) {
+          final m     = _kModules[i];
+          final count = counts.length > i ? counts[i] : '–';
+          final badge = count == '–' ? '…' : '$count ${m.countSuffix}';
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(22),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () => onTap(m.navTab, m.name),
+                splashColor:    Colors.white.withOpacity(0.15),
+                highlightColor: Colors.white.withOpacity(0.08),
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [m.colorA, m.colorB],
                     ),
                   ),
-                ))
-            .toList(),
+                  child: Stack(children: [
+                    Positioned(
+                      top: -22, right: -22,
+                      child: Container(
+                        width: 90, height: 90,
+                        decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Colors.white.withOpacity(0.09)),
+                      ),
+                    ),
+                    Positioned(
+                      bottom: -14, left: -14,
+                      child: Container(
+                        width: 64, height: 64,
+                        decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Colors.white.withOpacity(0.06)),
+                      ),
+                    ),
+                    Positioned(
+                      top: 0, right: 0,
+                      child: Container(
+                        width: 26, height: 26,
+                        decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(8)),
+                        child: const Center(
+                          child: Text('›',
+                              style: TextStyle(
+                                  fontSize: 16,
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w900)),
+                        ),
+                      ),
+                    ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 9, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.22),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(badge,
+                              style: const TextStyle(
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w800,
+                                  color: Colors.white)),
+                        ),
+                        const Spacer(),
+                        Text(m.emoji,
+                            style: const TextStyle(fontSize: 32)),
+                        const SizedBox(height: 6),
+                        Text(m.name,
+                            style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w900,
+                                color: Colors.white,
+                                letterSpacing: -0.1)),
+                        const SizedBox(height: 2),
+                        Text(m.sub,
+                            style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.white.withOpacity(0.72))),
+                      ],
+                    ),
+                  ]),
+                ),
+              ),
+            ),
+          );
+        }),
       ),
     );
   }
 }
 
 // ─────────────────────────────────────────────────────────────
-//  5. FEATURED EVENT
+//  4. FEATURED EVENT CARD  (from API)
 // ─────────────────────────────────────────────────────────────
-class _FeaturedEvent extends StatelessWidget {
-  final bool going;
-  final VoidCallback onRsvp, onDetail;
-  const _FeaturedEvent(
-      {required this.going,
-      required this.onRsvp,
-      required this.onDetail});
+class _FeaturedEventCard extends StatelessWidget {
+  final _ApiFeaturedEvent event;
+  final VoidCallback      onRsvp, onDetail;
+  const _FeaturedEventCard({
+    required this.event,
+    required this.onRsvp,
+    required this.onDetail,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1056,52 +1236,52 @@ class _FeaturedEvent extends StatelessWidget {
                             color: Colors.white.withOpacity(0.72),
                             letterSpacing: 1.5)),
                     const SizedBox(height: 6),
-                    const Text('UoN Tech Hackathon 2026',
-                        style: TextStyle(
+                    Text(event.title,
+                        style: const TextStyle(
                             fontSize: 18,
                             fontStyle: FontStyle.italic,
                             color: Colors.white,
                             height: 1.3)),
                     const SizedBox(height: 6),
                     Text(
-                      '📅 Sat, Feb 22 · 8:00 AM  ·  📍 Innovation Hub',
+                      [
+                        if (event.dateDisplay.isNotEmpty)
+                          '📅 ${event.dateDisplay}',
+                        if (event.location.isNotEmpty)
+                          '📍 ${event.location}',
+                      ].join('  ·  '),
                       style: TextStyle(
                           fontSize: 11,
                           color: Colors.white.withOpacity(0.75)),
                     ),
                     const SizedBox(height: 12),
                     Row(
-                      mainAxisAlignment:
-                          MainAxisAlignment.spaceBetween,
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Row(children: [
                           _AvatarStack(),
                           const SizedBox(width: 8),
-                          Text('+247 going',
+                          Text('+${event.attendingCount} going',
                               style: TextStyle(
                                   fontSize: 11,
-                                  color: Colors.white
-                                      .withOpacity(0.75))),
+                                  color: Colors.white.withOpacity(0.75))),
                         ]),
                         GestureDetector(
                           onTap: onRsvp,
                           child: AnimatedContainer(
-                            duration:
-                                const Duration(milliseconds: 250),
+                            duration: const Duration(milliseconds: 250),
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 14, vertical: 7),
                             decoration: BoxDecoration(
-                              color: going
+                              color: event.isGoing
                                   ? Colors.white.withOpacity(0.35)
                                   : Colors.white.withOpacity(0.18),
-                              borderRadius:
-                                  BorderRadius.circular(10),
+                              borderRadius: BorderRadius.circular(10),
                               border: Border.all(
-                                  color: Colors.white
-                                      .withOpacity(0.35)),
+                                  color: Colors.white.withOpacity(0.35)),
                             ),
                             child: Text(
-                                going ? '✅ Going' : 'RSVP →',
+                                event.isGoing ? '✅ Going' : 'RSVP →',
                                 style: const TextStyle(
                                     fontSize: 12,
                                     fontWeight: FontWeight.w800,
@@ -1143,8 +1323,7 @@ class _AvatarStack extends StatelessWidget {
                 shape: BoxShape.circle,
                 color: _av[i].$2,
                 border: Border.all(
-                    color: Colors.white.withOpacity(0.4),
-                    width: 2),
+                    color: Colors.white.withOpacity(0.4), width: 2),
               ),
               child: Center(
                 child: Text(_av[i].$1,
@@ -1162,308 +1341,15 @@ class _AvatarStack extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  6. HOUSING STRIP
+//  5. NOTIFICATIONS FEED  (replaces Activity Feed)
 // ─────────────────────────────────────────────────────────────
-class _HousingStrip extends StatelessWidget {
-  final void Function(_HousingData) onTap;
-  const _HousingStrip({required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 178,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        itemCount: _kHousings.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 10),
-        itemBuilder: (_, i) => ClipRRect(
-          borderRadius: BorderRadius.circular(16),
-          child: Material(
-            color: _C.surf,
-            child: InkWell(
-              onTap: () => onTap(_kHousings[i]),
-              child: Container(
-                width: 170,
-                decoration: BoxDecoration(
-                  border: Border.all(color: _C.border),
-                  boxShadow: [
-                    BoxShadow(
-                        color: Colors.black.withOpacity(0.06),
-                        blurRadius: 12,
-                        offset: const Offset(0, 3))
-                  ],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      height: 88,
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [
-                            _kHousings[i].gradA,
-                            _kHousings[i].gradB
-                          ],
-                        ),
-                      ),
-                      child: Stack(children: [
-                        Center(
-                          child: Text(_kHousings[i].emoji,
-                              style: const TextStyle(
-                                  fontSize: 44)),
-                        ),
-                        Positioned(
-                          top: 7, left: 7,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 7, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: Colors.white
-                                  .withOpacity(0.9),
-                              borderRadius:
-                                  BorderRadius.circular(7),
-                            ),
-                            child: Text(_kHousings[i].type,
-                                style: TextStyle(
-                                    fontSize: 9,
-                                    fontWeight: FontWeight.w800,
-                                    color: _kHousings[i]
-                                        .typeColor)),
-                          ),
-                        ),
-                      ]),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.all(10),
-                      child: Column(
-                        crossAxisAlignment:
-                            CrossAxisAlignment.start,
-                        children: [
-                          Text(_kHousings[i].title,
-                              style: const TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w800,
-                                  color: _C.text)),
-                          const SizedBox(height: 3),
-                          Text(_kHousings[i].price,
-                              style: const TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w900,
-                                  color: _C.terra)),
-                          const SizedBox(height: 2),
-                          Text(_kHousings[i].distance,
-                              style: const TextStyle(
-                                  fontSize: 10,
-                                  color: _C.text3)),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-//  7. EVENTS STRIP
-// ─────────────────────────────────────────────────────────────
-class _EventsStrip extends StatefulWidget {
-  const _EventsStrip();
-  @override
-  State<_EventsStrip> createState() => _EventsStripState();
-}
-
-class _EventsStripState extends State<_EventsStrip> {
-  final _going = [false, true, false];
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 184,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        itemCount: _kEvents.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 10),
-        itemBuilder: (_, i) {
-          final e = _kEvents[i];
-          return ClipRRect(
-            borderRadius: BorderRadius.circular(16),
-            child: Material(
-              color: _C.surf,
-              child: InkWell(
-                onTap: () => ScaffoldMessenger.of(context)
-                  ..clearSnackBars()
-                  ..showSnackBar(SnackBar(
-                    content: Text('Opening: ${e.title}',
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w600)),
-                    backgroundColor: e.rsvpColor,
-                    behavior: SnackBarBehavior.floating,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                    duration: const Duration(seconds: 2),
-                  )),
-                child: Container(
-                  width: 200,
-                  decoration: BoxDecoration(
-                      border: Border.all(color: _C.border)),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Container(
-                        height: 90,
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: [e.gradA, e.gradB],
-                          ),
-                        ),
-                        child: Stack(children: [
-                          Center(
-                            child: Text(e.emoji,
-                                style: const TextStyle(
-                                    fontSize: 48)),
-                          ),
-                          Positioned(
-                            top: 8, left: 8,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 8, vertical: 2),
-                              decoration: BoxDecoration(
-                                  color: e.catColor,
-                                  borderRadius:
-                                      BorderRadius.circular(8)),
-                              child: Text(e.category,
-                                  style: const TextStyle(
-                                      fontSize: 9,
-                                      fontWeight: FontWeight.w800,
-                                      color: Colors.white)),
-                            ),
-                          ),
-                          Positioned(
-                            bottom: 8, right: 8,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 8, vertical: 2),
-                              decoration: BoxDecoration(
-                                  color:
-                                      Colors.black.withOpacity(0.55),
-                                  borderRadius:
-                                      BorderRadius.circular(7)),
-                              child: Text(e.date,
-                                  style: const TextStyle(
-                                      fontSize: 9,
-                                      fontWeight: FontWeight.w800,
-                                      color: Colors.white)),
-                            ),
-                          ),
-                        ]),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.all(10),
-                        child: Column(
-                          crossAxisAlignment:
-                              CrossAxisAlignment.start,
-                          children: [
-                            Text(e.title,
-                                maxLines: 2,
-                                style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w800,
-                                    color: _C.text,
-                                    height: 1.3)),
-                            const SizedBox(height: 5),
-                            Row(
-                              mainAxisAlignment:
-                                  MainAxisAlignment.spaceBetween,
-                              children: [
-                                Text(e.attending,
-                                    style: const TextStyle(
-                                        fontSize: 10,
-                                        color: _C.text3)),
-                                GestureDetector(
-                                  onTap: () {
-                                    setState(
-                                        () => _going[i] =
-                                            !_going[i]);
-                                    HapticFeedback.mediumImpact();
-                                    ScaffoldMessenger.of(context)
-                                      ..clearSnackBars()
-                                      ..showSnackBar(SnackBar(
-                                        content: Text(
-                                          _going[i]
-                                              ? '✅ You\'re going to ${e.title}!'
-                                              : 'RSVP cancelled',
-                                          style: const TextStyle(
-                                              fontWeight:
-                                                  FontWeight.w600),
-                                        ),
-                                        backgroundColor: e.rsvpColor,
-                                        behavior:
-                                            SnackBarBehavior.floating,
-                                        shape: RoundedRectangleBorder(
-                                            borderRadius:
-                                                BorderRadius.circular(
-                                                    12)),
-                                        duration: const Duration(
-                                            seconds: 2),
-                                      ));
-                                  },
-                                  child: AnimatedContainer(
-                                    duration: const Duration(
-                                        milliseconds: 200),
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 10, vertical: 4),
-                                    decoration: BoxDecoration(
-                                      color: _going[i]
-                                          ? _C.green
-                                          : e.rsvpColor,
-                                      borderRadius:
-                                          BorderRadius.circular(8),
-                                    ),
-                                    child: Text(
-                                        _going[i] ? 'Going ✓' : 'RSVP',
-                                        style: const TextStyle(
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.w800,
-                                            color: Colors.white)),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-//  8. ACTIVITY FEED
-// ─────────────────────────────────────────────────────────────
-class _ActivityFeed extends StatelessWidget {
-  final List<ActivityItem> activities;
+class _NotificationsFeed extends StatelessWidget {
+  final List<_ApiNotification> notifications;
   final void Function(int) onTap;
-  const _ActivityFeed(
-      {required this.activities, required this.onTap});
+  const _NotificationsFeed({
+    required this.notifications,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1483,11 +1369,11 @@ class _ActivityFeed extends StatelessWidget {
       child: ClipRRect(
         borderRadius: BorderRadius.circular(20),
         child: Column(
-          children: List.generate(activities.length, (i) {
-            final a      = activities[i];
-            final isLast = i == activities.length - 1;
+          children: List.generate(notifications.length, (i) {
+            final n      = notifications[i];
+            final isLast = i == notifications.length - 1;
             return Material(
-              color: a.unread ? _C.offWhite : _C.surf,
+              color: n.isRead ? _C.surf : _C.offWhite,
               child: InkWell(
                 onTap: () => onTap(i),
                 child: Container(
@@ -1495,8 +1381,7 @@ class _ActivityFeed extends StatelessWidget {
                       ? null
                       : const BoxDecoration(
                           border: Border(
-                              bottom: BorderSide(
-                                  color: _C.border))),
+                              bottom: BorderSide(color: _C.border))),
                   padding: const EdgeInsets.symmetric(
                       horizontal: 14, vertical: 12),
                   child: Row(
@@ -1505,34 +1390,46 @@ class _ActivityFeed extends StatelessWidget {
                       Container(
                         width: 38, height: 38,
                         decoration: BoxDecoration(
-                            color: a.iconBg,
-                            borderRadius:
-                                BorderRadius.circular(12)),
+                            color: n.iconBg,
+                            borderRadius: BorderRadius.circular(12)),
                         child: Center(
-                          child: Text(a.emoji,
-                              style: const TextStyle(
-                                  fontSize: 16)),
+                          child: Text(n.emoji,
+                              style: const TextStyle(fontSize: 16)),
                         ),
                       ),
                       const SizedBox(width: 11),
                       Expanded(
                         child: Column(
-                          crossAxisAlignment:
-                              CrossAxisAlignment.start,
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(a.title,
+                            Text(n.title,
                                 style: TextStyle(
                                     fontSize: 12,
-                                    fontWeight: a.unread
-                                        ? FontWeight.w800
-                                        : FontWeight.w700,
+                                    fontWeight: n.isRead
+                                        ? FontWeight.w600
+                                        : FontWeight.w800,
                                     color: _C.text,
                                     height: 1.3)),
+                            if (n.body.isNotEmpty &&
+                                n.body != n.title) ...[
+                              const SizedBox(height: 2),
+                              Text(n.body,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontSize: 11,
+                                      color: _C.text2)),
+                            ],
                             const SizedBox(height: 3),
-                            Text(a.time,
-                                style: const TextStyle(
-                                    fontSize: 10,
-                                    color: _C.text3)),
+                            Text(
+                              [
+                                if (n.timeDisplay.isNotEmpty)
+                                  n.timeDisplay,
+                                n.sourceLabel,
+                              ].join(' · '),
+                              style: const TextStyle(
+                                  fontSize: 10, color: _C.text3),
+                            ),
                           ],
                         ),
                       ),
@@ -1540,14 +1437,11 @@ class _ActivityFeed extends StatelessWidget {
                       Padding(
                         padding: const EdgeInsets.only(top: 5),
                         child: AnimatedContainer(
-                          duration:
-                              const Duration(milliseconds: 300),
+                          duration: const Duration(milliseconds: 300),
                           width: 8, height: 8,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            color: a.unread
-                                ? a.dotColor
-                                : _C.border,
+                            color: n.isRead ? _C.border : n.dotColor,
                           ),
                         ),
                       ),
@@ -1564,7 +1458,139 @@ class _ActivityFeed extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  9. BOTTOM NAV
+//  EMPTY / SKELETON STATES
+// ─────────────────────────────────────────────────────────────
+
+/// Pulsing shimmer placeholder used while loading
+class _ShimmerLine extends StatelessWidget {
+  final double width, height;
+  const _ShimmerLine({required this.width, required this.height});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: width, height: height,
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.35),
+        borderRadius: BorderRadius.circular(6),
+      ),
+    );
+  }
+}
+
+class _FeaturedSkeleton extends StatelessWidget {
+  const _FeaturedSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      height: 148,
+      decoration: BoxDecoration(
+        color: _C.shimmer,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: const Center(
+        child: SizedBox(
+          width: 28, height: 28,
+          child: CircularProgressIndicator(
+            strokeWidth: 2.5,
+            color: _C.brand,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NotifsSkeleton extends StatelessWidget {
+  const _NotifsSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: _C.surf,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: _C.border),
+      ),
+      child: Column(
+        children: List.generate(3, (i) => Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Row(children: [
+            Container(
+              width: 38, height: 38,
+              decoration: BoxDecoration(
+                  color: _C.shimmer,
+                  borderRadius: BorderRadius.circular(12)),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    height: 12,
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      color: _C.shimmer,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Container(
+                    height: 10,
+                    width: 120,
+                    decoration: BoxDecoration(
+                      color: _C.shimmer,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ]),
+        )),
+      ),
+    );
+  }
+}
+
+class _EmptyNotifs extends StatelessWidget {
+  const _EmptyNotifs();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.symmetric(vertical: 36, horizontal: 20),
+      decoration: BoxDecoration(
+        color: _C.surf,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: _C.border),
+      ),
+      child: Column(children: [
+        Text('🔔', style: TextStyle(
+            fontSize: 36,
+            color: _C.text3.withOpacity(0.5))),
+        const SizedBox(height: 10),
+        const Text('All caught up!',
+            style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w800,
+                color: _C.text2)),
+        const SizedBox(height: 4),
+        const Text('No new notifications right now.',
+            style: TextStyle(fontSize: 12, color: _C.text3)),
+      ]),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  6. BOTTOM NAV
 // ─────────────────────────────────────────────────────────────
 class _BottomNav extends StatelessWidget {
   final int selected;
@@ -1665,8 +1691,7 @@ class _SearchDialogState extends State<_SearchDialog> {
             autofocus: true,
             decoration: InputDecoration(
               hintText: 'Search tutors, rooms, events…',
-              prefixIcon:
-                  const Icon(Icons.search, color: _C.brand),
+              prefixIcon: const Icon(Icons.search, color: _C.brand),
               filled: true,
               fillColor: _C.brandPale,
               border: OutlineInputBorder(
@@ -1689,8 +1714,7 @@ class _SearchDialogState extends State<_SearchDialog> {
                     style: const TextStyle(fontSize: 20)),
                 title: Text(s.label,
                     style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        color: _C.text)),
+                        fontWeight: FontWeight.w700, color: _C.text)),
                 trailing: const Icon(Icons.arrow_forward_ios,
                     size: 12, color: _C.text3),
                 onTap: () {
@@ -1705,29 +1729,33 @@ class _SearchDialogState extends State<_SearchDialog> {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  NOTIFICATION SHEET
+//  NOTIFICATION BOTTOM SHEET
 // ─────────────────────────────────────────────────────────────
 class _NotificationSheet extends StatefulWidget {
-  final List<ActivityItem> activities;
+  final List<_ApiNotification> notifications;
   final VoidCallback onMarkAll;
-  const _NotificationSheet(
-      {required this.activities, required this.onMarkAll});
+  const _NotificationSheet({
+    required this.notifications,
+    required this.onMarkAll,
+  });
   @override
-  State<_NotificationSheet> createState() =>
-      _NotificationSheetState();
+  State<_NotificationSheet> createState() => _NotificationSheetState();
 }
 
-class _NotificationSheetState
-    extends State<_NotificationSheet> {
+class _NotificationSheetState extends State<_NotificationSheet> {
   @override
   Widget build(BuildContext context) {
     return Container(
       decoration: const BoxDecoration(
         color: _C.surf,
-        borderRadius:
-            BorderRadius.vertical(top: Radius.circular(24)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+      padding: EdgeInsets.only(
+        left: 20,
+        right: 20,
+        top: 12,
+        bottom: MediaQuery.of(context).padding.bottom + 24,
+      ),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
         Container(
           width: 40, height: 4,
@@ -1757,163 +1785,49 @@ class _NotificationSheetState
           ],
         ),
         const SizedBox(height: 8),
-        ...widget.activities.map((a) => ListTile(
+        if (widget.notifications.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 24),
+            child: Column(children: const [
+              Text('🔔', style: TextStyle(fontSize: 32)),
+              SizedBox(height: 8),
+              Text('No notifications yet.',
+                  style: TextStyle(fontSize: 13, color: _C.text3)),
+            ]),
+          ),
+        ...widget.notifications.map((n) => ListTile(
               leading: Container(
                 width: 38, height: 38,
                 decoration: BoxDecoration(
-                    color: a.iconBg,
+                    color: n.iconBg,
                     borderRadius: BorderRadius.circular(12)),
                 child: Center(
-                    child: Text(a.emoji,
+                    child: Text(n.emoji,
                         style: const TextStyle(fontSize: 16))),
               ),
-              title: Text(a.title,
+              title: Text(n.title,
                   style: TextStyle(
                       fontSize: 12,
-                      fontWeight: a.unread
-                          ? FontWeight.w800
-                          : FontWeight.w600,
+                      fontWeight: n.isRead
+                          ? FontWeight.w600
+                          : FontWeight.w800,
                       color: _C.text)),
-              subtitle: Text(a.time,
-                  style: const TextStyle(
-                      fontSize: 10, color: _C.text3)),
+              subtitle: Text(
+                [
+                  if (n.timeDisplay.isNotEmpty) n.timeDisplay,
+                  n.sourceLabel,
+                ].join(' · '),
+                style: const TextStyle(
+                    fontSize: 10, color: _C.text3),
+              ),
               trailing: Container(
                 width: 8, height: 8,
                 decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: a.unread ? a.dotColor : _C.border),
+                    color: n.isRead ? _C.border : n.dotColor),
               ),
-              onTap: () => setState(() => a.unread = false),
+              onTap: () => setState(() => n.isRead = true),
             )),
-      ]),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-//  HOUSING DETAIL SHEET
-// ─────────────────────────────────────────────────────────────
-class _HousingDetailSheet extends StatelessWidget {
-  final _HousingData card;
-  final VoidCallback onContact;
-  const _HousingDetailSheet(
-      {required this.card, required this.onContact});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        color: _C.surf,
-        borderRadius:
-            BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(
-          width: 40, height: 4,
-          decoration: BoxDecoration(
-              color: _C.border,
-              borderRadius: BorderRadius.circular(2)),
-        ),
-        const SizedBox(height: 16),
-        Container(
-          width: double.infinity, height: 140,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [card.gradA, card.gradB],
-            ),
-          ),
-          child: Center(
-            child: Text(card.emoji,
-                style: const TextStyle(fontSize: 64)),
-          ),
-        ),
-        const SizedBox(height: 16),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(card.title,
-                style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w900,
-                    color: _C.text)),
-            Text(card.price,
-                style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w900,
-                    color: _C.terra)),
-          ],
-        ),
-        const SizedBox(height: 6),
-        Row(children: [
-          Text(card.distance,
-              style: const TextStyle(
-                  fontSize: 13, color: _C.text3)),
-          const SizedBox(width: 12),
-          Container(
-            padding: const EdgeInsets.symmetric(
-                horizontal: 10, vertical: 3),
-            decoration: BoxDecoration(
-                color: _C.greenPale,
-                borderRadius: BorderRadius.circular(8)),
-            child: Text(card.type,
-                style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: card.typeColor)),
-          ),
-        ]),
-        const SizedBox(height: 24),
-        Row(children: [
-          Expanded(
-            child: OutlinedButton(
-              style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: _C.brand),
-                foregroundColor: _C.brand,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-                padding: const EdgeInsets.symmetric(
-                    vertical: 14),
-              ),
-              onPressed: () {
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Listing saved ❤️'),
-                    backgroundColor: _C.brand,
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-              },
-              child: const Text('Save Listing',
-                  style: TextStyle(
-                      fontWeight: FontWeight.w800)),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _C.brand,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-                padding: const EdgeInsets.symmetric(
-                    vertical: 14),
-              ),
-              onPressed: () {
-                Navigator.pop(context);
-                onContact();
-              },
-              child: const Text('Contact Agent',
-                  style: TextStyle(
-                      fontWeight: FontWeight.w800)),
-            ),
-          ),
-        ]),
       ]),
     );
   }
@@ -1932,16 +1846,14 @@ class _TopoPainter extends CustomPainter {
     for (final r in [(80.0, 44.0), (55.0, 30.0), (32.0, 18.0)])
       canvas.drawOval(
           Rect.fromCenter(
-              center:
-                  Offset(s.width * 0.187, s.height * 0.24),
+              center: Offset(s.width * 0.187, s.height * 0.24),
               width: r.$1 * 2,
               height: r.$2 * 2),
           p);
     for (final r in [(95.0, 52.0), (66.0, 36.0), (38.0, 20.0)])
       canvas.drawOval(
           Rect.fromCenter(
-              center:
-                  Offset(s.width * 0.827, s.height * 0.60),
+              center: Offset(s.width * 0.827, s.height * 0.60),
               width: r.$1 * 2,
               height: r.$2 * 2),
           p);
@@ -1954,9 +1866,12 @@ class _TopoPainter extends CustomPainter {
           ..moveTo(v[0], v[1])
           ..cubicTo(v[2], v[3], v[4], v[5], v[6], v[7]),
         t);
-    c([0, s.height * .16, s.width * .213, s.height * .04,  s.width * .48,  s.height * .22, s.width, s.height * .18]);
-    c([0, s.height * .40, s.width * .187, s.height * .28,  s.width * .453, s.height * .42, s.width, s.height * .40]);
-    c([0, s.height * .66, s.width * .24,  s.height * .56,  s.width * .493, s.height * .68, s.width, s.height * .64]);
+    c([0, s.height * .16, s.width * .213, s.height * .04,
+       s.width * .48,  s.height * .22, s.width, s.height * .18]);
+    c([0, s.height * .40, s.width * .187, s.height * .28,
+       s.width * .453, s.height * .42, s.width, s.height * .40]);
+    c([0, s.height * .66, s.width * .24,  s.height * .56,
+       s.width * .493, s.height * .68, s.width, s.height * .64]);
   }
 
   @override
