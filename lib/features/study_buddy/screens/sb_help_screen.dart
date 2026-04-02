@@ -1,30 +1,86 @@
 // ============================================================
-//  StudyBuddy — sb_help_screen.dart  (API-connected)
+//  StudyBuddy — sb_help_screen.dart  (Bot Buddy Edition)
 //
-//  Now uses ApiClient (lib/core/api_client.dart) for all
-//  requests — automatic token refresh, same pattern as
-//  profile_screen.dart.
+//  Primary interface: Bot Buddy chat — an AI-powered study
+//  assistant that answers academic questions inline.
 //
-//  GET  /api/study/questions/           → Q&A feed
-//  POST /api/study/questions/           → post question
-//  POST /api/study/questions/<id>/vote/ → upvote
+//  Secondary: Community Q&A feed (tab switch)
+//
+//  Bot API will be wired in Phase 2 (see _BotApi stub).
 //
 //  Screen stack:
-//    SBHelpScreen
-//      ├─ SBAnswerThreadScreen   (tap Q&A card)
-//      └─ SBAskQuestionScreen    (tap FAB)
+//    SBHelpScreen  (tab: Bot | Community)
+//      ├─ _BotChatView          ← new primary experience
+//      ├─ _CommunityFeedView    ← existing Q&A feed
+//      ├─ SBAnswerThreadScreen  (tap Q&A card)
+//      └─ SBAskQuestionScreen   (tap FAB in community tab)
 // ============================================================
 
 import 'dart:convert';
 import 'dart:developer' as dev;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
-import '../../../core/api_client.dart';   // ← same shared client as profile_screen
+import '../../../core/api_client.dart';
 import '../models/sb_constants.dart';
 import '../widgets/sb_widgets.dart';
 
 // ─────────────────────────────────────────────────────────────
-//  MODEL
+//  CHAT MESSAGE MODEL
+// ─────────────────────────────────────────────────────────────
+enum _Sender { bot, user }
+
+class _ChatMessage {
+  final String   text;
+  final _Sender  sender;
+  final DateTime time;
+  final bool     isTyping; // true = animated "…" bubble
+
+  const _ChatMessage({
+    required this.text,
+    required this.sender,
+    required this.time,
+    this.isTyping = false,
+  });
+
+  _ChatMessage copyWith({String? text, bool? isTyping}) => _ChatMessage(
+    text:      text     ?? this.text,
+    sender:    sender,
+    time:      time,
+    isTyping:  isTyping ?? this.isTyping,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+//  BOT API STUB  (Phase 2: replace body with real LLM call)
+// ─────────────────────────────────────────────────────────────
+class _BotApi {
+  /// Send [question] to Bot Buddy and return the answer string.
+  /// Phase 1 → returns a placeholder.
+  /// Phase 2 → uncomment the ApiClient call below.
+  static Future<String> ask(String question) async {
+    await Future.delayed(const Duration(milliseconds: 1400)); // simulate latency
+
+    // ── Phase 2 (uncomment when endpoint is ready) ──────────
+    // final res = await ApiClient.post('/api/v1/study-buddy/bot/', body: {
+    //   'question': question,
+    // });
+    // if (res.statusCode == 200) {
+    //   final body = jsonDecode(res.body) as Map<String, dynamic>;
+    //   return body['answer'] as String? ?? 'Hmm, I could not get an answer.';
+    // }
+    // throw Exception('Bot error (${res.statusCode})');
+    // ────────────────────────────────────────────────────────
+
+    // Phase 1 placeholder
+    return "Great question! 🤓 I'm Bot Buddy — your AI study assistant. "
+        "Once I'm fully wired up, I'll give you detailed answers, worked "
+        "examples, and resources for any academic topic. Stay tuned!";
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  QUESTION MODEL  (unchanged from original)
 // ─────────────────────────────────────────────────────────────
 class QuestionModel {
   final String id;
@@ -77,17 +133,13 @@ class QuestionModel {
       if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
       if (diff.inHours   < 24) return '${diff.inHours}h ago';
       return '${diff.inDays}d ago';
-    } catch (_) {
-      return '';
-    }
+    } catch (_) { return ''; }
   }
 
   factory QuestionModel.fromJson(Map<String, dynamic> json) {
     final urgencyStr = json['urgency'] as String? ?? 'not_urgent';
     final (urgencyLabel, urgencyColor, urgencyBg) = _urgencyMeta(urgencyStr);
-
     final tags = (json['tags'] as List? ?? []).map((t) => t.toString()).toList();
-
     return QuestionModel(
       id:           json['id']?.toString() ?? '',
       user:         json['user_name'] as String? ??
@@ -108,7 +160,7 @@ class QuestionModel {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  API SERVICE
+//  COMMUNITY API SERVICE  (unchanged)
 // ─────────────────────────────────────────────────────────────
 class _HelpApi {
   static const _base = '/api/v1/study-buddy';
@@ -120,48 +172,32 @@ class _HelpApi {
     final params = <String, String>{};
     if (filter != null && filter.isNotEmpty) params['filter'] = filter;
     if (search != null && search.isNotEmpty) params['search'] = search;
-
     final query = params.entries
-        .map((e) => '${e.key}=${Uri.encodeComponent(e.value)}')
-        .join('&');
+        .map((e) => '${e.key}=${Uri.encodeComponent(e.value)}').join('&');
     final path  = query.isEmpty ? '$_base/questions/' : '$_base/questions/?$query';
-
-    final res = await ApiClient.get(path);
+    final res   = await ApiClient.get(path);
     dev.log('[SBHelp] GET $path → ${res.statusCode}');
-
-    if (res.statusCode != 200) {
-      throw Exception('Failed to load questions (${res.statusCode})');
-    }
-
+    if (res.statusCode != 200) throw Exception('Failed to load questions (${res.statusCode})');
     final body    = jsonDecode(res.body) as Map<String, dynamic>;
     final results = (body['results'] ?? body) as List<dynamic>;
-    return results
-        .map((e) => QuestionModel.fromJson(e as Map<String, dynamic>))
-        .toList();
+    return results.map((e) => QuestionModel.fromJson(e as Map<String, dynamic>)).toList();
   }
 
   static Future<void> postQuestion(Map<String, dynamic> payload) async {
     final res = await ApiClient.post('$_base/questions/', body: payload);
     dev.log('[SBHelp] POST question → ${res.statusCode}');
-    if (res.statusCode != 201) {
-      throw Exception('Failed to post question (${res.statusCode})');
-    }
+    if (res.statusCode != 201) throw Exception('Failed to post question (${res.statusCode})');
   }
 
   static Future<void> upvoteQuestion(String id) async {
     final res = await ApiClient.post('$_base/questions/$id/vote/');
     dev.log('[SBHelp] POST vote $id → ${res.statusCode}');
-    if (res.statusCode != 200 && res.statusCode != 201) {
-      throw Exception('Vote failed (${res.statusCode})');
-    }
+    if (res.statusCode != 200 && res.statusCode != 201) throw Exception('Vote failed (${res.statusCode})');
   }
 }
 
 // ─────────────────────────────────────────────────────────────
-//  1. Q&A FEED
-//
-//  State pattern mirrors profile_screen.dart:
-//    _loading / _error / _questions  (atomic setState)
+//  ROOT SCREEN  — tabs: Bot Buddy | Community
 // ─────────────────────────────────────────────────────────────
 class SBHelpScreen extends StatefulWidget {
   const SBHelpScreen({super.key});
@@ -170,68 +206,20 @@ class SBHelpScreen extends StatefulWidget {
   State<SBHelpScreen> createState() => _SBHelpScreenState();
 }
 
-class _SBHelpScreenState extends State<SBHelpScreen> {
-  int    _filter      = 0;
-  String _searchQuery = '';
-
-  List<QuestionModel>? _questions;
-  bool    _loading = true;
-  String? _error;
-
-  // Optimistic vote tracking
-  final Set<String> _voted = {};
-
-  static const _filters    = ['All', 'Unanswered', 'MATH', 'CS', 'CHEM'];
-  static const _filterKeys = ['',    'unanswered',  'math', 'cs', 'chem'];
+class _SBHelpScreenState extends State<SBHelpScreen>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tab;
 
   @override
   void initState() {
     super.initState();
-    _fetchQuestions();
+    _tab = TabController(length: 2, vsync: this);
   }
 
-  Future<void> _fetchQuestions() async {
-    if (mounted) setState(() { _loading = true; _error = null; });
-
-    try {
-      final filterKey = _filterKeys[_filter];
-      final data      = await _HelpApi.fetchQuestions(
-        filter: filterKey.isEmpty ? null : filterKey,
-        search: _searchQuery.isEmpty ? null : _searchQuery,
-      );
-      if (mounted) setState(() { _questions = data; _loading = false; });
-    } catch (e, st) {
-      dev.log('[SBHelp] _fetchQuestions error: $e', stackTrace: st);
-      if (mounted) {
-        setState(() {
-          _error   = 'Could not load questions. Check your connection.';
-          _loading = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _upvote(QuestionModel q) async {
-    if (_voted.contains(q.id)) return;   // already voted this session
-    setState(() => _voted.add(q.id));    // optimistic
-    try {
-      await _HelpApi.upvoteQuestion(q.id);
-    } catch (e, st) {
-      dev.log('[SBHelp] _upvote error: $e', stackTrace: st);
-      if (mounted) setState(() => _voted.remove(q.id));   // revert
-    }
-  }
-
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..clearSnackBars()
-      ..showSnackBar(SnackBar(
-        content: Text(msg),
-        backgroundColor: SBColors.brandDark,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ));
+  @override
+  void dispose() {
+    _tab.dispose();
+    super.dispose();
   }
 
   @override
@@ -247,73 +235,696 @@ class _SBHelpScreenState extends State<SBHelpScreen> {
         ),
         title: const Text('Academic Help', style: TextStyle(
             fontSize: 17, fontWeight: FontWeight.w700, color: SBColors.text)),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(48),
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            padding: const EdgeInsets.all(3),
+            decoration: BoxDecoration(
+              color: SBColors.surface3,
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: TabBar(
+              controller: _tab,
+              indicator: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(11),
+                boxShadow: [BoxShadow(
+                  color: Colors.black.withOpacity(0.06),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                )],
+              ),
+              indicatorSize: TabBarIndicatorSize.tab,
+              labelColor: SBColors.text,
+              unselectedLabelColor: SBColors.text3,
+              labelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+              unselectedLabelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+              dividerColor: Colors.transparent,
+              tabs: const [
+                Tab(text: '🤖  Bot Buddy'),
+                Tab(text: '👥  Community'),
+              ],
+            ),
+          ),
+        ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () async {
-          await Navigator.push(context,
-              MaterialPageRoute(builder: (_) => const SBAskQuestionScreen()));
-          // Reload after returning from ask screen
-          _fetchQuestions();
-        },
-        backgroundColor: SBColors.brand,
-        icon: const Text('🙋', style: TextStyle(fontSize: 18)),
-        label: const Text('Ask Question',
-            style: TextStyle(fontWeight: FontWeight.w700, color: Colors.white)),
+      body: TabBarView(
+        controller: _tab,
+        physics: const NeverScrollableScrollPhysics(),
+        children: const [
+          _BotChatView(),
+          _CommunityFeedView(),
+        ],
       ),
-      body: RefreshIndicator(
-        onRefresh: () async => _fetchQuestions(),
-        color: SBColors.brand,
-        child: CustomScrollView(
-          slivers: [
-            // ── Search ─────────────────────────────────────
-            SliverToBoxAdapter(
-              child: SBSearchBar(
-                hint: 'Search questions...',
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  BOT BUDDY CHAT VIEW
+// ─────────────────────────────────────────────────────────────
+class _BotChatView extends StatefulWidget {
+  const _BotChatView();
+
+  @override
+  State<_BotChatView> createState() => _BotChatViewState();
+}
+
+class _BotChatViewState extends State<_BotChatView> {
+  final _ctrl       = TextEditingController();
+  final _scroll     = ScrollController();
+  final _focusNode  = FocusNode();
+  bool  _sending    = false;
+
+  // Prompt suggestions shown below the intro card
+  static const _suggestions = [
+    '📐 Explain the chain rule',
+    '⚛️  How does osmosis work?',
+    '💡 What is Big O notation?',
+    '📜 Summarise the Cold War',
+  ];
+
+  final List<_ChatMessage> _messages = [
+    _ChatMessage(
+      text:   '__intro__', // sentinel — rendered as the fancy intro card
+      sender: _Sender.bot,
+      time:   DateTime.now(),
+    ),
+  ];
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    _scroll.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  // ── scroll helpers ────────────────────────────────────────
+  void _scrollToBottom({bool animated = true}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scroll.hasClients) return;
+      if (animated) {
+        _scroll.animateTo(
+          _scroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      } else {
+        _scroll.jumpTo(_scroll.position.maxScrollExtent);
+      }
+    });
+  }
+
+  // ── send a message ────────────────────────────────────────
+  Future<void> _send([String? prefilled]) async {
+    final text = (prefilled ?? _ctrl.text).trim();
+    if (text.isEmpty || _sending) return;
+
+    HapticFeedback.lightImpact();
+    _ctrl.clear();
+    _focusNode.unfocus();
+
+    // 1. Add user bubble
+    final userMsg = _ChatMessage(
+      text: text, sender: _Sender.user, time: DateTime.now());
+    // 2. Add typing indicator
+    final typingMsg = _ChatMessage(
+      text: '', sender: _Sender.bot, time: DateTime.now(), isTyping: true);
+
+    setState(() {
+      _sending = true;
+      _messages.add(userMsg);
+      _messages.add(typingMsg);
+    });
+    _scrollToBottom();
+
+    try {
+      final answer = await _BotApi.ask(text);
+      if (!mounted) return;
+      setState(() {
+        _messages[_messages.length - 1] =
+            typingMsg.copyWith(text: answer, isTyping: false);
+        _sending = false;
+      });
+    } catch (e, st) {
+      dev.log('[BotBuddy] error: $e', stackTrace: st);
+      if (!mounted) return;
+      setState(() {
+        _messages[_messages.length - 1] = typingMsg.copyWith(
+          text: '⚠️ Sorry, I hit a snag. Please try again.',
+          isTyping: false,
+        );
+        _sending = false;
+      });
+    }
+    _scrollToBottom();
+  }
+
+  // ── build ─────────────────────────────────────────────────
+  @override
+  Widget build(BuildContext context) {
+    final showSuggestions =
+        _messages.length == 1; // only intro card shown
+
+    return Column(
+      children: [
+        // ── message list ─────────────────────────────────────
+        Expanded(
+          child: ListView.builder(
+            controller: _scroll,
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+            itemCount: _messages.length + (showSuggestions ? 1 : 0),
+            itemBuilder: (_, i) {
+              // Suggestions row (after intro card)
+              if (showSuggestions && i == 1) {
+                return _SuggestionsRow(
+                  suggestions: _suggestions,
+                  onTap: _send,
+                );
+              }
+              final msg = _messages[i];
+              if (msg.text == '__intro__') return const _BotIntroCard();
+              if (msg.sender == _Sender.bot) {
+                return msg.isTyping
+                    ? const _TypingBubble()
+                    : _BotBubble(text: msg.text, time: msg.time);
+              }
+              return _UserBubble(text: msg.text, time: msg.time);
+            },
+          ),
+        ),
+
+        // ── input bar ────────────────────────────────────────
+        _ChatInputBar(
+          controller: _ctrl,
+          focusNode:  _focusNode,
+          sending:    _sending,
+          onSend:     _send,
+        ),
+      ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  BOT INTRO CARD
+// ─────────────────────────────────────────────────────────────
+class _BotIntroCard extends StatelessWidget {
+  const _BotIntroCard();
+
+  @override
+  Widget build(BuildContext context) => Container(
+    margin: const EdgeInsets.only(bottom: 16),
+    padding: const EdgeInsets.all(18),
+    decoration: BoxDecoration(
+      gradient: const LinearGradient(
+        colors: [SBColors.brand, SBColors.brandDark],
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+      ),
+      borderRadius: BorderRadius.circular(20),
+      boxShadow: [
+        BoxShadow(color: SBColors.brand.withOpacity(0.3),
+            blurRadius: 20, offset: const Offset(0, 6)),
+      ],
+    ),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        // Bot avatar
+        Container(
+          width: 48, height: 48,
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.2),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: const Center(
+              child: Text('🤖', style: TextStyle(fontSize: 26))),
+        ),
+        const SizedBox(width: 12),
+        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Bot Buddy', style: TextStyle(
+              fontSize: 17, fontWeight: FontWeight.w800, color: Colors.white)),
+          Row(children: [
+            Container(
+              width: 7, height: 7,
+              decoration: const BoxDecoration(
+                  color: Color(0xFF4ADE80), shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 5),
+            Text('Online  ·  AI Study Assistant',
+                style: TextStyle(fontSize: 11, color: Colors.white.withOpacity(0.8))),
+          ]),
+        ]),
+      ]),
+      const SizedBox(height: 14),
+      const Text(
+        'Hey there! 👋  I\'m Bot Buddy, your personal AI tutor. '
+        'Ask me anything — maths, science, history, coding — '
+        'and I\'ll explain it clearly, step by step.',
+        style: TextStyle(fontSize: 13, color: Colors.white, height: 1.6),
+      ),
+      const SizedBox(height: 12),
+      Wrap(spacing: 8, runSpacing: 6, children: [
+        _IntroTag('📖 Explanations'),
+        _IntroTag('🔢 Worked Examples'),
+        _IntroTag('📚 Study Resources'),
+        _IntroTag('✍️  Essay Help'),
+      ]),
+    ]),
+  );
+}
+
+class _IntroTag extends StatelessWidget {
+  final String label;
+  const _IntroTag(this.label);
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+    decoration: BoxDecoration(
+      color: Colors.white.withOpacity(0.18),
+      borderRadius: BorderRadius.circular(20),
+    ),
+    child: Text(label,
+        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
+            color: Colors.white)),
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+//  SUGGESTION CHIPS
+// ─────────────────────────────────────────────────────────────
+class _SuggestionsRow extends StatelessWidget {
+  final List<String>     suggestions;
+  final void Function(String) onTap;
+
+  const _SuggestionsRow({required this.suggestions, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 12),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const Text('Try asking:', style: TextStyle(
+          fontSize: 11, fontWeight: FontWeight.w600, color: SBColors.text3)),
+      const SizedBox(height: 8),
+      Wrap(
+        spacing: 8, runSpacing: 8,
+        children: suggestions.map((s) => GestureDetector(
+          onTap: () => onTap(s),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: SBColors.border, width: 1.5),
+            ),
+            child: Text(s, style: const TextStyle(
+                fontSize: 12, fontWeight: FontWeight.w500, color: SBColors.text)),
+          ),
+        )).toList(),
+      ),
+    ]),
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+//  CHAT BUBBLES
+// ─────────────────────────────────────────────────────────────
+class _BotBubble extends StatelessWidget {
+  final String   text;
+  final DateTime time;
+  const _BotBubble({required this.text, required this.time});
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 14),
+    child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+      // Mini bot avatar
+      Container(
+        width: 30, height: 30,
+        margin: const EdgeInsets.only(right: 8),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+              colors: [SBColors.brand, SBColors.brandDark]),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: const Center(child: Text('🤖', style: TextStyle(fontSize: 14))),
+      ),
+      Flexible(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: const BorderRadius.only(
+                topLeft:     Radius.circular(18),
+                topRight:    Radius.circular(18),
+                bottomRight: Radius.circular(18),
+                bottomLeft:  Radius.circular(4),
+              ),
+              boxShadow: [BoxShadow(
+                  color: Colors.black.withOpacity(0.05),
+                  blurRadius: 8, offset: const Offset(0, 2))],
+            ),
+            child: Text(text, style: const TextStyle(
+                fontSize: 13, color: SBColors.text, height: 1.6)),
+          ),
+          const SizedBox(height: 4),
+          Text(_fmt(time), style: const TextStyle(
+              fontSize: 10, color: SBColors.text3)),
+        ]),
+      ),
+      const SizedBox(width: 48), // keep bot bubbles from spanning full width
+    ]),
+  );
+}
+
+class _UserBubble extends StatelessWidget {
+  final String   text;
+  final DateTime time;
+  const _UserBubble({required this.text, required this.time});
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 14),
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.end,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        const SizedBox(width: 48),
+        Flexible(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                    colors: [SBColors.brand, SBColors.brandDark]),
+                borderRadius: BorderRadius.only(
+                  topLeft:     Radius.circular(18),
+                  topRight:    Radius.circular(18),
+                  bottomLeft:  Radius.circular(18),
+                  bottomRight: Radius.circular(4),
+                ),
+              ),
+              child: Text(text, style: const TextStyle(
+                  fontSize: 13, color: Colors.white, height: 1.6)),
+            ),
+            const SizedBox(height: 4),
+            Text(_fmt(time), style: const TextStyle(
+                fontSize: 10, color: SBColors.text3)),
+          ]),
+        ),
+      ],
+    ),
+  );
+}
+
+class _TypingBubble extends StatefulWidget {
+  const _TypingBubble();
+
+  @override
+  State<_TypingBubble> createState() => _TypingBubbleState();
+}
+
+class _TypingBubbleState extends State<_TypingBubble>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  late Animation<double> _anim;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl  = AnimationController(vsync: this,
+        duration: const Duration(milliseconds: 900))
+      ..repeat(reverse: true);
+    _anim  = CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut);
+  }
+
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 14),
+    child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+      Container(
+        width: 30, height: 30,
+        margin: const EdgeInsets.only(right: 8),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+              colors: [SBColors.brand, SBColors.brandDark]),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: const Center(child: Text('🤖', style: TextStyle(fontSize: 14))),
+      ),
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(18), topRight: Radius.circular(18),
+            bottomRight: Radius.circular(18), bottomLeft: Radius.circular(4),
+          ),
+          boxShadow: [BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 8, offset: const Offset(0, 2))],
+        ),
+        child: AnimatedBuilder(
+          animation: _anim,
+          builder: (_, __) => Row(
+            mainAxisSize: MainAxisSize.min,
+            children: List.generate(3, (i) {
+              final delay = i / 3;
+              final val   = (_anim.value - delay).clamp(0.0, 1.0);
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 3),
+                child: Transform.translate(
+                  offset: Offset(0, -4 * val),
+                  child: Container(
+                    width: 7, height: 7,
+                    decoration: BoxDecoration(
+                        color: SBColors.brand.withOpacity(0.5 + 0.5 * val),
+                        shape: BoxShape.circle),
+                  ),
+                ),
+              );
+            }),
+          ),
+        ),
+      ),
+    ]),
+  );
+}
+
+String _fmt(DateTime t) {
+  final h = t.hour.toString().padLeft(2, '0');
+  final m = t.minute.toString().padLeft(2, '0');
+  return '$h:$m';
+}
+
+// ─────────────────────────────────────────────────────────────
+//  CHAT INPUT BAR
+// ─────────────────────────────────────────────────────────────
+class _ChatInputBar extends StatelessWidget {
+  final TextEditingController controller;
+  final FocusNode             focusNode;
+  final bool                  sending;
+  final VoidCallback          onSend;
+
+  const _ChatInputBar({
+    required this.controller,
+    required this.focusNode,
+    required this.sending,
+    required this.onSend,
+  });
+
+  @override
+  Widget build(BuildContext context) => Container(
+    decoration: BoxDecoration(
+      color: Colors.white,
+      boxShadow: [BoxShadow(
+          color: Colors.black.withOpacity(0.06),
+          blurRadius: 16, offset: const Offset(0, -4))],
+    ),
+    padding: EdgeInsets.fromLTRB(
+        16, 10, 16, MediaQuery.of(context).padding.bottom + 10),
+    child: Row(children: [
+      Expanded(
+        child: Container(
+          decoration: BoxDecoration(
+            color: SBColors.surface2,
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: SBColors.border, width: 1.5),
+          ),
+          child: TextField(
+            controller: controller,
+            focusNode:  focusNode,
+            maxLines: 4,
+            minLines: 1,
+            textInputAction: TextInputAction.send,
+            onSubmitted: (_) => onSend(),
+            style: const TextStyle(fontSize: 14, color: SBColors.text),
+            decoration: const InputDecoration(
+              hintText:        'Ask Bot Buddy anything...',
+              hintStyle:       TextStyle(fontSize: 13, color: SBColors.text3),
+              border:          InputBorder.none,
+              contentPadding:  EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            ),
+          ),
+        ),
+      ),
+      const SizedBox(width: 10),
+      GestureDetector(
+        onTap: sending ? null : onSend,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          width: 46, height: 46,
+          decoration: BoxDecoration(
+            color: sending
+                ? SBColors.brand.withOpacity(0.5)
+                : SBColors.brand,
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [BoxShadow(
+                color: SBColors.brand.withOpacity(0.3),
+                blurRadius: 12, offset: const Offset(0, 4))],
+          ),
+          child: sending
+              ? const Center(child: SizedBox(
+                  width: 18, height: 18,
+                  child: CircularProgressIndicator(
+                      color: Colors.white, strokeWidth: 2)))
+              : const Center(child: Icon(
+                  Icons.send_rounded, color: Colors.white, size: 20)),
+        ),
+      ),
+    ]),
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+//  COMMUNITY FEED VIEW  (moved from root — unchanged logic)
+// ─────────────────────────────────────────────────────────────
+class _CommunityFeedView extends StatefulWidget {
+  const _CommunityFeedView();
+
+  @override
+  State<_CommunityFeedView> createState() => _CommunityFeedViewState();
+}
+
+class _CommunityFeedViewState extends State<_CommunityFeedView> {
+  int    _filter      = 0;
+  String _searchQuery = '';
+
+  List<QuestionModel>? _questions;
+  bool    _loading = true;
+  String? _error;
+
+  final Set<String> _voted = {};
+
+  static const _filters    = ['All', 'Unanswered', 'MATH', 'CS', 'CHEM'];
+  static const _filterKeys = ['',    'unanswered',  'math', 'cs', 'chem'];
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchQuestions();
+  }
+
+  Future<void> _fetchQuestions() async {
+    if (mounted) setState(() { _loading = true; _error = null; });
+    try {
+      final filterKey = _filterKeys[_filter];
+      final data      = await _HelpApi.fetchQuestions(
+        filter: filterKey.isEmpty ? null : filterKey,
+        search: _searchQuery.isEmpty ? null : _searchQuery,
+      );
+      if (mounted) setState(() { _questions = data; _loading = false; });
+    } catch (e, st) {
+      dev.log('[SBHelp] _fetchQuestions error: $e', stackTrace: st);
+      if (mounted) setState(() {
+        _error   = 'Could not load questions. Check your connection.';
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _upvote(QuestionModel q) async {
+    if (_voted.contains(q.id)) return;
+    setState(() => _voted.add(q.id));
+    try {
+      await _HelpApi.upvoteQuestion(q.id);
+    } catch (e, st) {
+      dev.log('[SBHelp] _upvote error: $e', stackTrace: st);
+      if (mounted) setState(() => _voted.remove(q.id));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        RefreshIndicator(
+          onRefresh: () async => _fetchQuestions(),
+          color: SBColors.brand,
+          child: CustomScrollView(
+            slivers: [
+              SliverToBoxAdapter(child: SBSearchBar(
+                hint: 'Search community questions...',
                 onChanged: (q) {
                   setState(() => _searchQuery = q);
                   _fetchQuestions();
                 },
-              ),
-            ),
-
-            // ── Filter chips ───────────────────────────────
-            SliverToBoxAdapter(
-              child: SizedBox(
-                height: 46,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  itemCount: _filters.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 8),
-                  itemBuilder: (_, i) => SBChip(
-                    label: _filters[i],
-                    active: _filter == i,
-                    onTap: () {
-                      setState(() => _filter = i);
-                      _fetchQuestions();
-                    },
+              )),
+              SliverToBoxAdapter(
+                child: SizedBox(
+                  height: 46,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    itemCount: _filters.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                    itemBuilder: (_, i) => SBChip(
+                      label:  _filters[i],
+                      active: _filter == i,
+                      onTap: () {
+                        setState(() => _filter = i);
+                        _fetchQuestions();
+                      },
+                    ),
                   ),
                 ),
               ),
-            ),
-
-            const SliverToBoxAdapter(child: SizedBox(height: 12)),
-
-            // ── Content ────────────────────────────────────
-            SliverToBoxAdapter(child: _buildContent()),
-          ],
+              const SliverToBoxAdapter(child: SizedBox(height: 12)),
+              SliverToBoxAdapter(child: _buildContent()),
+            ],
+          ),
         ),
-      ),
+
+        // FAB — Ask question
+        Positioned(
+          bottom: 16, right: 16,
+          child: FloatingActionButton.extended(
+            heroTag: 'community_fab',
+            onPressed: () async {
+              await Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const SBAskQuestionScreen()));
+              _fetchQuestions();
+            },
+            backgroundColor: SBColors.brand,
+            icon: const Text('🙋', style: TextStyle(fontSize: 18)),
+            label: const Text('Ask Question',
+                style: TextStyle(fontWeight: FontWeight.w700, color: Colors.white)),
+          ),
+        ),
+      ],
     );
   }
 
   Widget _buildContent() {
-    // Loading — shimmer cards
-    if (_loading) {
-      return Column(children: _shimmerCards());
-    }
+    if (_loading) return Column(children: _shimmerCards());
 
-    // Error (same pattern as _NameBlock)
     if (_error != null) {
       return Padding(
         padding: const EdgeInsets.all(40),
@@ -338,7 +949,6 @@ class _SBHelpScreenState extends State<SBHelpScreen> {
     }
 
     final questions = _questions ?? [];
-
     if (questions.isEmpty) {
       return Padding(
         padding: const EdgeInsets.all(40),
@@ -356,10 +966,10 @@ class _SBHelpScreenState extends State<SBHelpScreen> {
 
     return Column(children: [
       ...questions.map((q) => _QACard(
-        q:       q,
-        voted:   _voted.contains(q.id),
-        onVote:  () => _upvote(q),
-        onTap:   () => Navigator.push(context,
+        q:      q,
+        voted:  _voted.contains(q.id),
+        onVote: () => _upvote(q),
+        onTap:  () => Navigator.push(context,
             MaterialPageRoute(builder: (_) => SBAnswerThreadScreen(question: q))),
       )),
       const SizedBox(height: 80),
@@ -398,7 +1008,7 @@ class _SBHelpScreenState extends State<SBHelpScreen> {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  Q&A CARD  (data-driven, same visual)
+//  Q&A CARD  (unchanged)
 // ─────────────────────────────────────────────────────────────
 class _QACard extends StatelessWidget {
   final QuestionModel q;
@@ -422,12 +1032,11 @@ class _QACard extends StatelessWidget {
       decoration: SBTheme.card,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          Container(
-            width: 36, height: 36,
-            decoration: const BoxDecoration(
-                color: SBColors.brandPale, shape: BoxShape.circle),
-            child: Center(child: Text(q.emoji, style: const TextStyle(fontSize: 16))),
-          ),
+          Container(width: 36, height: 36,
+              decoration: const BoxDecoration(
+                  color: SBColors.brandPale, shape: BoxShape.circle),
+              child: Center(child: Text(q.emoji,
+                  style: const TextStyle(fontSize: 16)))),
           const SizedBox(width: 10),
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(q.user, style: const TextStyle(
@@ -454,7 +1063,8 @@ class _QACard extends StatelessWidget {
           Wrap(spacing: 5, runSpacing: 5, children: q.tags.map((t) => Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
             decoration: BoxDecoration(
-                color: const Color(0xFFFFF4E6), borderRadius: BorderRadius.circular(8)),
+                color: const Color(0xFFFFF4E6),
+                borderRadius: BorderRadius.circular(8)),
             child: Text(t, style: const TextStyle(
                 fontSize: 10, fontWeight: FontWeight.w600, color: SBColors.accent)),
           )).toList()),
@@ -467,8 +1077,7 @@ class _QACard extends StatelessWidget {
             onTap: onVote,
             child: Row(children: [
               Text(voted ? '👍' : '👍', style: TextStyle(
-                  fontSize: 14,
-                  color: voted ? SBColors.brand : null)),
+                  fontSize: 14, color: voted ? SBColors.brand : null)),
               const SizedBox(width: 4),
               Text('${q.votes + (voted ? 1 : 0)}', style: TextStyle(
                   fontSize: 12, fontWeight: FontWeight.w600,
@@ -502,7 +1111,7 @@ class _QACard extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  2. ASK QUESTION  (posts to /api/study/questions/)
+//  ASK QUESTION SCREEN  (unchanged)
 // ─────────────────────────────────────────────────────────────
 class SBAskQuestionScreen extends StatefulWidget {
   const SBAskQuestionScreen({super.key});
@@ -539,13 +1148,12 @@ class _SBAskQuestionScreenState extends State<SBAskQuestionScreen> {
       final tags = _tagsCtrl.text.trim().isEmpty
           ? <String>[]
           : _tagsCtrl.text.split(',').map((t) => t.trim()).toList();
-
       await _HelpApi.postQuestion({
-        'question':  _questionCtrl.text.trim(),
-        'course':    _courseCtrl.text.trim(),
-        'tags':      tags,
-        'urgency':   _urgency,
-        'help_via':  _helpVia.toLowerCase().replaceAll(' ', '_'),
+        'question': _questionCtrl.text.trim(),
+        'course':   _courseCtrl.text.trim(),
+        'tags':     tags,
+        'urgency':  _urgency,
+        'help_via': _helpVia.toLowerCase().replaceAll(' ', '_'),
       });
       if (!mounted) return;
       Navigator.pop(context);
@@ -590,9 +1198,11 @@ class _SBAskQuestionScreenState extends State<SBAskQuestionScreen> {
               child: Center(
                 child: _loading
                     ? const SizedBox(width: 16, height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: SBColors.brand))
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: SBColors.brand))
                     : const Text('Post', style: TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.w600, color: SBColors.brand)),
+                        fontSize: 13, fontWeight: FontWeight.w600,
+                        color: SBColors.brand)),
               ),
             ),
           ),
@@ -613,8 +1223,6 @@ class _SBAskQuestionScreenState extends State<SBAskQuestionScreen> {
           const SizedBox(height: 12),
           SBFormField(label: 'Tags (comma-separated)', controller: _tagsCtrl),
           const SizedBox(height: 12),
-
-          // Attach row (UI only — file attachment handled natively in production)
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(color: Colors.white,
@@ -634,8 +1242,6 @@ class _SBAskQuestionScreenState extends State<SBAskQuestionScreen> {
             ]),
           ),
           const SizedBox(height: 12),
-
-          // Urgency
           _PickerField(
             label: 'URGENCY',
             child: Wrap(spacing: 8, runSpacing: 8, children: [
@@ -651,8 +1257,6 @@ class _SBAskQuestionScreenState extends State<SBAskQuestionScreen> {
             ]),
           ),
           const SizedBox(height: 12),
-
-          // Help via
           _PickerField(
             label: 'PREFER HELP VIA',
             child: Wrap(spacing: 8, runSpacing: 8,
@@ -660,15 +1264,14 @@ class _SBAskQuestionScreenState extends State<SBAskQuestionScreen> {
                 .map<Widget>((opt) {
                   final key = opt.split(' ').sublist(1).join(' ');
                   return SBChip(
-                    label: opt,
+                    label:  opt,
                     active: _helpVia == key,
-                    onTap: () => setState(() => _helpVia = key),
+                    onTap:  () => setState(() => _helpVia = key),
                   );
                 }).toList(),
             ),
           ),
           const SizedBox(height: 20),
-
           GestureDetector(
             onTap: _loading ? null : _submit,
             child: AnimatedContainer(
@@ -676,7 +1279,9 @@ class _SBAskQuestionScreenState extends State<SBAskQuestionScreen> {
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 15),
               decoration: BoxDecoration(
-                color: _loading ? SBColors.brand.withOpacity(0.6) : SBColors.brand,
+                color: _loading
+                    ? SBColors.brand.withOpacity(0.6)
+                    : SBColors.brand,
                 borderRadius: BorderRadius.circular(16),
                 boxShadow: [BoxShadow(color: SBColors.brand.withOpacity(0.3),
                     blurRadius: 20, offset: const Offset(0, 6))],
@@ -684,9 +1289,11 @@ class _SBAskQuestionScreenState extends State<SBAskQuestionScreen> {
               child: Center(
                 child: _loading
                     ? const SizedBox(width: 20, height: 20,
-                        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                        child: CircularProgressIndicator(
+                            color: Colors.white, strokeWidth: 2))
                     : const Text('🙋  Post Question', style: TextStyle(
-                        fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white)),
+                        fontSize: 15, fontWeight: FontWeight.w700,
+                        color: Colors.white)),
               ),
             ),
           ),
@@ -749,7 +1356,7 @@ class _UrgencyChip extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  3. ANSWER THREAD  (receives the full QuestionModel)
+//  ANSWER THREAD SCREEN  (unchanged)
 // ─────────────────────────────────────────────────────────────
 class SBAnswerThreadScreen extends StatelessWidget {
   final QuestionModel question;
@@ -778,7 +1385,6 @@ class SBAnswerThreadScreen extends StatelessWidget {
       ),
       body: SingleChildScrollView(
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // Question card (gradient)
           Container(
             margin: const EdgeInsets.all(16),
             padding: const EdgeInsets.all(16),
@@ -788,25 +1394,31 @@ class SBAnswerThreadScreen extends StatelessWidget {
                 Container(
                   width: 32, height: 32,
                   decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.2), shape: BoxShape.circle),
-                  child: Center(child: Text(q.emoji, style: const TextStyle(fontSize: 14))),
+                      color: Colors.white.withOpacity(0.2),
+                      shape: BoxShape.circle),
+                  child: Center(child: Text(q.emoji,
+                      style: const TextStyle(fontSize: 14))),
                 ),
                 const SizedBox(width: 10),
                 Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(q.user, style: const TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w600, color: Colors.white)),
+                      fontSize: 13, fontWeight: FontWeight.w600,
+                      color: Colors.white)),
                   Text(
                     [q.timeAgo, if (q.course.isNotEmpty) q.course]
                         .where((s) => s.isNotEmpty).join(' · '),
-                    style: TextStyle(fontSize: 10, color: Colors.white.withOpacity(0.75))),
+                    style: TextStyle(fontSize: 10,
+                        color: Colors.white.withOpacity(0.75))),
                 ])),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.2),
                       borderRadius: BorderRadius.circular(8)),
                   child: Text(q.urgency, style: const TextStyle(
-                      fontSize: 10, fontWeight: FontWeight.w700, color: Colors.white)),
+                      fontSize: 10, fontWeight: FontWeight.w700,
+                      color: Colors.white)),
                 ),
               ]),
               const SizedBox(height: 10),
@@ -815,29 +1427,26 @@ class SBAnswerThreadScreen extends StatelessWidget {
               if (q.tags.isNotEmpty) ...[
                 const SizedBox(height: 10),
                 Wrap(spacing: 6, children: q.tags.map((t) => Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.15),
                       borderRadius: BorderRadius.circular(8)),
                   child: Text(t, style: const TextStyle(
-                      fontSize: 10, fontWeight: FontWeight.w600, color: Colors.white)),
+                      fontSize: 10, fontWeight: FontWeight.w600,
+                      color: Colors.white)),
                 )).toList()),
               ],
             ]),
           ),
-
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-            child: Text('💬  ${q.answerCount} ${q.answerCount == 1 ? 'Answer' : 'Answers'}',
-                style: const TextStyle(fontSize: 12,
-                    fontWeight: FontWeight.w600, color: SBColors.text2)),
+            child: Text(
+              '💬  ${q.answerCount} ${q.answerCount == 1 ? 'Answer' : 'Answers'}',
+              style: const TextStyle(fontSize: 12,
+                  fontWeight: FontWeight.w600, color: SBColors.text2)),
           ),
-
-          // Placeholder best-answer card (real answers would be fetched from
-          // GET /api/study/questions/<id>/answers/ in a production impl)
           if (q.answered) _BestAnswerCard(),
-
-          // Reply box
           Container(
             margin: const EdgeInsets.fromLTRB(16, 0, 16, 28),
             padding: const EdgeInsets.all(14),
@@ -853,21 +1462,26 @@ class SBAnswerThreadScreen extends StatelessWidget {
                   style: const TextStyle(fontSize: 13, color: SBColors.text3)),
               const SizedBox(height: 10),
               Row(children: [
-                Wrap(spacing: 6, children: ['📎 File', '🔗 Link', '📚 Resource'].map((opt) =>
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                    decoration: BoxDecoration(
-                        color: SBColors.surface3, borderRadius: BorderRadius.circular(8)),
-                    child: Text(opt, style: const TextStyle(fontSize: 11, color: SBColors.text2)),
-                  )
-                ).toList()),
+                Wrap(spacing: 6, children: ['📎 File', '🔗 Link', '📚 Resource']
+                    .map((opt) => Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 5),
+                  decoration: BoxDecoration(
+                      color: SBColors.surface3,
+                      borderRadius: BorderRadius.circular(8)),
+                  child: Text(opt, style: const TextStyle(
+                      fontSize: 11, color: SBColors.text2)),
+                )).toList()),
                 const Spacer(),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 7),
                   decoration: BoxDecoration(
-                      color: SBColors.brand, borderRadius: BorderRadius.circular(10)),
+                      color: SBColors.brand,
+                      borderRadius: BorderRadius.circular(10)),
                   child: const Text('Post', style: TextStyle(
-                      fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white)),
+                      fontSize: 12, fontWeight: FontWeight.w600,
+                      color: Colors.white)),
                 ),
               ]),
             ]),
@@ -878,8 +1492,6 @@ class SBAnswerThreadScreen extends StatelessWidget {
   }
 }
 
-// ── Static best-answer placeholder ───────────────────────────
-// (In production, fetch real answers via GET /api/study/questions/<id>/answers/)
 class _BestAnswerCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
@@ -897,10 +1509,12 @@ class _BestAnswerCard extends StatelessWidget {
         Container(
           width: 36, height: 36,
           decoration: const BoxDecoration(
-            gradient: LinearGradient(colors: [SBColors.brand, SBColors.brandDark]),
+            gradient: LinearGradient(
+                colors: [SBColors.brand, SBColors.brandDark]),
             borderRadius: BorderRadius.all(Radius.circular(12)),
           ),
-          child: const Center(child: Text('👨‍🏫', style: TextStyle(fontSize: 16))),
+          child: const Center(child: Text('👨‍🏫',
+              style: TextStyle(fontSize: 16))),
         ),
         const SizedBox(width: 10),
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -914,7 +1528,8 @@ class _BestAnswerCard extends StatelessWidget {
                   color: SBColors.green.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(6)),
               child: const Text('✓ Best Answer', style: TextStyle(
-                  fontSize: 9, fontWeight: FontWeight.w700, color: SBColors.green)),
+                  fontSize: 9, fontWeight: FontWeight.w700,
+                  color: SBColors.green)),
             ),
           ]),
           const Text('Verified by community', style: TextStyle(
