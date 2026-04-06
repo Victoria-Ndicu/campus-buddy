@@ -9,134 +9,226 @@ import '../../../core/api_client.dart';
 // ─────────────────────────────────────────────────────────────
 //  API ENDPOINTS
 //
-//  GET    /api/v1/housing/listings/                        → browse listings
-//  GET    /api/v1/housing/listings/?type=<t>&search=<q>   → filtered browse
-//  GET    /api/v1/housing/listings/<uuid>/                 → listing detail
-//  POST   /api/v1/housing/listings/<uuid>/save/            → toggle save
-//  POST   /api/v1/housing/uploads/                         → upload photo
-//  POST   /api/v1/housing/listings/                        → create listing
+//  GET  /api/v1/housing/module/                           → module state
+//  GET  /api/v1/housing/listings/                         → all listings
+//  GET  /api/v1/housing/listings/?tags=apartment          → filtered
+//  GET  /api/v1/housing/listings/<uuid>/                  → detail
+//  POST /api/v1/housing/listings/<uuid>/save/             → toggle save
+//
+//  RESPONSE SHAPE (StandardPagination):
+//  { "success": true, "data": [...], "meta": { "page", "limit", "total", "totalPages" } }
+//
+//  FIELD NAMES (HousingListingSerializer — camelCase):
+//  rentPerMonth, locationName, imageUrls, availableFrom, landlordId, createdAt
 // ─────────────────────────────────────────────────────────────
 
-// ─────────────────────────────────────────────────────────────
-//  MODEL
-// ─────────────────────────────────────────────────────────────
-class _Listing {
-  final String id, type, title, price, location, availability;
+class HousingListing {
+  final String id;
+  final String title;
+  final String rentPerMonth;
+  final String locationName;
+  final String status;
   final List<String> tags;
-  final String? imageUrl;
+  final List<String> amenities;
+  final List<String> imageUrls;
+  final int?    bedrooms;
+  final int?    bathrooms;
+  final String? availableFrom;
+  final String? description;
 
-  const _Listing({
+  const HousingListing({
     required this.id,
-    required this.type,
     required this.title,
-    required this.price,
-    required this.location,
-    required this.availability,
+    required this.rentPerMonth,
+    required this.locationName,
+    required this.status,
     required this.tags,
-    this.imageUrl,
+    required this.amenities,
+    required this.imageUrls,
+    this.bedrooms,
+    this.bathrooms,
+    this.availableFrom,
+    this.description,
   });
 
-  factory _Listing.fromJson(Map<String, dynamic> j) => _Listing(
-    id:           j['id']?.toString() ?? '',
-    type:         j['type']?.toString() ?? 'Other',
-    title:        j['title']?.toString() ?? '',
-    price:        j['price']?.toString() ?? '',
-    location:     j['location']?.toString() ?? '',
-    availability: j['availability']?.toString() ?? '',
-    tags:         (j['tags'] as List?)
-        ?.map((e) => e.toString()).toList() ?? [],
-    imageUrl:     j['image_url']?.toString(),
+  // Serializer outputs camelCase — match exactly
+  factory HousingListing.fromJson(Map<String, dynamic> j) => HousingListing(
+    id:            j['id']?.toString() ?? '',
+    title:         j['title']?.toString() ?? '',
+    rentPerMonth:  j['rentPerMonth']?.toString() ?? '',   // ← camelCase
+    locationName:  j['locationName']?.toString() ?? '',   // ← camelCase
+    status:        j['status']?.toString() ?? 'active',
+    tags:          (j['tags'] as List?)?.map((e) => e.toString()).toList() ?? [],
+    amenities:     (j['amenities'] as List?)?.map((e) => e.toString()).toList() ?? [],
+    imageUrls:     (j['imageUrls'] as List?)?.map((e) => e.toString()).toList() ?? [],  // ← camelCase
+    bedrooms:      j['bedrooms'] as int?,
+    bathrooms:     j['bathrooms'] as int?,
+    availableFrom: j['availableFrom']?.toString(),        // ← camelCase
+    description:   j['description']?.toString(),
   );
 
-  // Derive emoji and gradient from type (no hardcoded data)
-  String get emoji => switch (type) {
-    'Apartment'   => '🏠',
-    'Single Room' => '🛏',
-    'Shared'      => '🏘',
-    'Bedsitter'   => '🏣',
+  String get primaryTag => tags.isNotEmpty ? tags.first : '';
+
+  String get emoji => switch (primaryTag) {
+    'apartment'   => '🏠',
+    'single_room' => '🛏',
+    'shared_room' => '🏘',
+    'bedsitter'   => '🏣',
+    'hostel'      => '🏫',
     _             => '🏠',
   };
 
-  Color get gradA => switch (type) {
-    'Apartment'   => const Color(0xFFFDF0EC),
-    'Single Room' => const Color(0xFFF0F4FF),
-    'Shared'      => const Color(0xFFECFDF5),
-    'Bedsitter'   => const Color(0xFFFFF3E0),
+  String get tagLabel => switch (primaryTag) {
+    'apartment'   => 'Apartment',
+    'single_room' => 'Single Room',
+    'shared_room' => 'Shared Room',
+    'bedsitter'   => 'Bedsitter',
+    'hostel'      => 'Hostel',
+    _             => 'Listing',
+  };
+
+  static String labelFor(String tag) => switch (tag) {
+    'apartment'   => 'Apartment',
+    'single_room' => 'Single Room',
+    'shared_room' => 'Shared Room',
+    'bedsitter'   => 'Bedsitter',
+    'hostel'      => 'Hostel',
+    _             => tag,
+  };
+
+  Color get gradA => switch (primaryTag) {
+    'apartment'   => const Color(0xFFFDF0EC),
+    'single_room' => const Color(0xFFF0F4FF),
+    'shared_room' => const Color(0xFFECFDF5),
+    'bedsitter'   => const Color(0xFFFFF3E0),
+    'hostel'      => const Color(0xFFF3EEFF),
     _             => const Color(0xFFF8F9FF),
   };
 
-  Color get gradB => switch (type) {
-    'Apartment'   => const Color(0xFFF4C5B5),
-    'Single Room' => const Color(0xFFDDE6FF),
-    'Shared'      => const Color(0xFFA7F3D0),
-    'Bedsitter'   => const Color(0xFFFFCC80),
+  Color get gradB => switch (primaryTag) {
+    'apartment'   => const Color(0xFFF4C5B5),
+    'single_room' => const Color(0xFFDDE6FF),
+    'shared_room' => const Color(0xFFA7F3D0),
+    'bedsitter'   => const Color(0xFFFFCC80),
+    'hostel'      => const Color(0xFFD8C8F8),
     _             => const Color(0xFFE1E5F7),
   };
 
-  Color get typeColor => switch (type) {
-    'Apartment'   => HHColors.brandDark,
-    'Single Room' => HHColors.blue,
-    'Shared'      => HHColors.teal,
-    'Bedsitter'   => HHColors.amber,
+  Color get typeColor => switch (primaryTag) {
+    'apartment'   => HHColors.brandDark,
+    'single_room' => HHColors.blue,
+    'shared_room' => HHColors.teal,
+    'bedsitter'   => HHColors.amber,
+    'hostel'      => const Color(0xFF7C4DFF),
     _             => HHColors.text2,
+  };
+
+  Color get typePale => switch (primaryTag) {
+    'apartment'   => HHColors.brandPale,
+    'single_room' => HHColors.bluePale,
+    'shared_room' => HHColors.tealPale,
+    'bedsitter'   => HHColors.amberPale,
+    'hostel'      => const Color(0xFFF3EEFF),
+    _             => HHColors.surface2,
   };
 }
 
 // ─────────────────────────────────────────────────────────────
 //  SCREEN 1 — Browse Listings
-//  GET /api/v1/housing/listings/?type=<t>&search=<q>
 // ─────────────────────────────────────────────────────────────
 class HHListingsScreen extends StatefulWidget {
   const HHListingsScreen({super.key});
+
   @override
   State<HHListingsScreen> createState() => _HHListingsScreenState();
 }
 
 class _HHListingsScreenState extends State<HHListingsScreen> {
-  int     _filter  = 0;
-  String  _query   = '';
-  List<_Listing> _listings  = [];
-  bool    _loading = true;
+  int    _filter        = 0;
+  bool   _loading       = true;
+  bool   _moduleEnabled = true;
   String? _error;
-  DateTime _lastSearch = DateTime(0);
+  List<HousingListing> _listings = [];
 
-  static const _filters = [
-    'All', '🏠 Apartment', '🛏 Single Room', '🏘 Shared', '🏣 Bedsitter',
+  static const _filterLabels = [
+    'All',
+    '🏠 Apartment',
+    '🛏 Single Room',
+    '🏘 Shared Room',
+    '🏣 Bedsitter',
+    '🏫 Hostel',
   ];
-  static const _filterTypes = [
-    '', 'Apartment', 'Single Room', 'Shared', 'Bedsitter',
+  static const _filterTags = [
+    '',
+    'apartment',
+    'single_room',
+    'shared_room',
+    'bedsitter',
+    'hostel',
   ];
 
   @override
   void initState() {
     super.initState();
-    _load();
+    _boot();
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  GET /api/v1/housing/listings/
-  // ─────────────────────────────────────────────────────────
-  Future<void> _load() async {
+  Future<void> _boot() async {
+    await _checkModule();
+    if (_moduleEnabled && mounted) await _loadListings();
+    if (mounted) setState(() => _loading = false);
+  }
+
+  Future<void> _checkModule() async {
+    try {
+      final res = await ApiClient.get('/api/v1/housing/module/');
+      dev.log('[HH] module → ${res.statusCode}');
+      if (!mounted) return;
+      final body = jsonDecode(res.body) as Map<String, dynamic>?;
+      // Shape: { "success": true, "data": { "enabled": true, ... } }
+      final data = body?['data'];
+      _moduleEnabled = (data is Map ? data['enabled'] : body?['enabled']) as bool? ?? true;
+    } catch (e) {
+      dev.log('[HH] module check error: $e');
+      _moduleEnabled = true;
+    }
+  }
+
+  Future<void> _loadListings() async {
     if (mounted) setState(() { _loading = true; _error = null; });
-
-    final params = <String>[];
-    final type = _filterTypes[_filter];
-    if (type.isNotEmpty) params.add('type=${Uri.encodeComponent(type)}');
-    if (_query.isNotEmpty) params.add('search=${Uri.encodeComponent(_query)}');
-    final qs = params.isEmpty ? '' : '?${params.join('&')}';
-
+    final tag = _filterTags[_filter];
+    final qs  = tag.isNotEmpty ? '?tags=$tag' : '';
     try {
       final res = await ApiClient.get('/api/v1/housing/listings/$qs');
-      dev.log('[Listings] GET /housing/listings/$qs → ${res.statusCode}');
+      dev.log('[HH] listings$qs → ${res.statusCode}');
+      dev.log('[HH] body → ${res.body}');
       if (!mounted) return;
       if (res.statusCode == 200) {
         final decoded = jsonDecode(res.body);
-        final raw = decoded is List
-            ? decoded
-            : (decoded['results'] as List?) ?? [];
+
+        // StandardPagination always returns:
+        // { "success": true, "data": [...], "meta": { ... } }
+        List<dynamic> raw = [];
+        if (decoded is List) {
+          raw = decoded;
+        } else if (decoded is Map) {
+          final d = decoded['data'];
+          if (d is List) {
+            raw = d;                                    // ← our shape ✓
+          } else if (d is Map) {
+            raw = (d['results'] as List?) ?? [];
+          } else {
+            raw = (decoded['results'] as List?) ?? [];
+          }
+        }
+
+        dev.log('[HH] parsed ${raw.length} listings');
+
         setState(() {
-          _listings = raw.whereType<Map<String, dynamic>>()
-              .map(_Listing.fromJson).toList();
+          _listings = raw
+              .whereType<Map<String, dynamic>>()
+              .map(HousingListing.fromJson)
+              .toList();
           _loading = false;
         });
       } else {
@@ -146,7 +238,7 @@ class _HHListingsScreenState extends State<HHListingsScreen> {
         });
       }
     } catch (e, s) {
-      dev.log('[Listings] error: $e', stackTrace: s);
+      dev.log('[HH] listings error: $e', stackTrace: s);
       if (mounted) setState(() {
         _error   = 'Network error. Pull to refresh.';
         _loading = false;
@@ -154,283 +246,340 @@ class _HHListingsScreenState extends State<HHListingsScreen> {
     }
   }
 
+  Widget _maybeGrey(Widget child) {
+    if (_moduleEnabled) return child;
+    return Stack(children: [
+      ColorFiltered(
+        colorFilter: const ColorFilter.matrix([
+          0.2126, 0.7152, 0.0722, 0, 0,
+          0.2126, 0.7152, 0.0722, 0, 0,
+          0.2126, 0.7152, 0.0722, 0, 0,
+          0,      0,      0,      1, 0,
+        ]),
+        child: child,
+      ),
+      Positioned.fill(
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => HapticFeedback.heavyImpact(),
+          child: Center(
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 40),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 24, vertical: 22),
+              decoration: BoxDecoration(
+                color: HHColors.surface,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.12),
+                    blurRadius: 24),
+                ]),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const Text('🔒', style: TextStyle(fontSize: 34)),
+                const SizedBox(height: 10),
+                Text('Housing Hub unavailable',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                    color: HHColors.text)),
+                const SizedBox(height: 4),
+                Text('This module has been temporarily\ndisabled. Check back soon.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 12,
+                    height: 1.5,
+                    color: HHColors.text3)),
+              ]),
+            ),
+          ),
+        ),
+      ),
+    ]);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: HHColors.surface2,
-      appBar: AppBar(
-        backgroundColor: HHColors.surface,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new,
-              size: 18, color: HHColors.text),
-          onPressed: () => Navigator.pop(context),
+      appBar: _buildAppBar(),
+      body: _maybeGrey(
+        RefreshIndicator(
+          color: HHColors.brand,
+          onRefresh: _moduleEnabled ? _loadListings : () async {},
+          child: CustomScrollView(slivers: [
+
+            SliverToBoxAdapter(child: _buildFilterRow()),
+
+            SliverToBoxAdapter(
+              child: HHSectionLabel(
+                title: _filter == 0
+                    ? 'All listings'
+                    : _filterLabels[_filter],
+                action: _listings.isNotEmpty
+                    ? '${_listings.length} found'
+                    : null,
+              )),
+
+            if (_loading)
+              const SliverFillRemaining(
+                child: Center(
+                  child: CircularProgressIndicator(color: HHColors.brand)))
+
+            else if (_error != null)
+              SliverFillRemaining(child: _buildError())
+
+            else if (_listings.isEmpty)
+              SliverFillRemaining(child: _buildEmpty())
+
+            else ...[
+              SliverList(
+                delegate: SliverChildBuilderDelegate(
+                  (_, i) => _ListingCard(
+                    listing: _listings[i],
+                    onTap: () => _openDetail(_listings[i]),
+                  ),
+                  childCount: _listings.length,
+                )),
+              const SliverToBoxAdapter(child: SizedBox(height: 32)),
+            ],
+          ]),
         ),
-        title: Column(crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Housing Hub', style: TextStyle(
-              fontFamily: 'serif', fontSize: 18,
+      ),
+    );
+  }
+
+  AppBar _buildAppBar() {
+    return AppBar(
+      backgroundColor: HHColors.surface,
+      elevation: 0,
+      leading: IconButton(
+        icon: const Icon(Icons.arrow_back_ios_new,
+          size: 18, color: HHColors.text),
+        onPressed: () => Navigator.pop(context),
+      ),
+      titleSpacing: 0,
+      title: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Housing Hub',
+            style: TextStyle(
+              fontFamily: 'serif',
+              fontSize: 18,
               fontWeight: FontWeight.w900,
               color: HHColors.brandDark,
               fontStyle: FontStyle.italic)),
-            Text(
-              _loading
-                ? 'Loading…'
-                : '${_listings.length} listing${_listings.length == 1 ? '' : 's'} available',
-              style: TextStyle(
-                fontSize: 11, color: HHColors.text3)),
-          ]),
-        titleSpacing: 0,
-        actions: [
-          Container(margin: const EdgeInsets.only(right: 8),
-            padding: const EdgeInsets.all(7),
-            decoration: BoxDecoration(
-              color: HHColors.brandPale,
-              borderRadius: BorderRadius.circular(11)),
-            child: Text('🔔', style: TextStyle(
-              fontSize: 18, color: HHColors.brand))),
-          Container(margin: const EdgeInsets.only(right: 12),
-            padding: const EdgeInsets.all(7),
-            decoration: BoxDecoration(
-              color: HHColors.brand,
-              borderRadius: BorderRadius.circular(11)),
-            child: const Text('👤',
-              style: TextStyle(fontSize: 18))),
-        ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(1),
-          child: Divider(color: HHColors.border, height: 1)),
-      ),
-      body: RefreshIndicator(
-        color: HHColors.brand,
-        onRefresh: _load,
-        child: CustomScrollView(slivers: [
-          // ── Inline search bar (replaces HHSearchBar which lacks onChanged) ──
-          SliverToBoxAdapter(
-            child: _HHInlineSearchBar(
-              hint: 'Search location, type, price...',
-              onChanged: (v) {
-                setState(() => _query = v);
-                final now = DateTime.now();
-                _lastSearch = now;
-                Future.delayed(const Duration(milliseconds: 500), () {
-                  if (_lastSearch == now) _load();
-                });
-              },
-            ),
-          ),
-
-          SliverToBoxAdapter(
-            child: SizedBox(height: 50,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-                itemCount: _filters.length,
-                separatorBuilder: (_, __) =>
-                    const SizedBox(width: 7),
-                itemBuilder: (_, i) => HHChip(
-                  label: _filters[i],
-                  active: _filter == i,
-                  onTap: () {
-                    setState(() => _filter = i);
-                    _load();
-                  },
-                ),
-              )),
-          ),
-
-          SliverToBoxAdapter(
-            child: HHSectionLabel(title: 'Latest Listings')),
-
-          if (_loading)
-            const SliverFillRemaining(
-              child: Center(child: CircularProgressIndicator()))
-          else if (_error != null)
-            SliverFillRemaining(
-              child: Center(child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(_error!, textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 13, color: HHColors.text3)),
-                  const SizedBox(height: 12),
-                  TextButton.icon(
-                    onPressed: _load,
-                    icon: const Icon(Icons.refresh_rounded,
-                      size: 16),
-                    label: const Text('Retry')),
-                ])))
-          else if (_listings.isEmpty)
-            SliverFillRemaining(
-              child: Center(child: Text('No listings found.',
-                style: TextStyle(
-                  fontSize: 13, color: HHColors.text3))))
-          else
-            SliverList(
-              delegate: SliverChildBuilderDelegate(
-                (_, i) {
-                  if (i == _listings.length) {
-                    return const SizedBox(height: 100);
-                  }
-                  final l = _listings[i];
-                  return _ListingCard(
-                    listing: l,
-                    onTap: () => Navigator.push(context,
-                      MaterialPageRoute(
-                        builder: (_) => HHListingDetailScreen(
-                          listingId: l.id,
-                          title:     l.title,
-                          price:     l.price,
-                          location:  l.location,
-                          type:      l.type,
-                          emoji:     l.emoji,
-                        ))),
-                  );
-                },
-                childCount: _listings.length + 1,
-              )),
+          Text(
+            _moduleEnabled
+              ? (_loading
+                  ? 'Loading…'
+                  : '${_listings.length} listing${_listings.length == 1 ? '' : 's'} available')
+              : 'Currently unavailable',
+            style: TextStyle(fontSize: 11, color: HHColors.text3)),
         ]),
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: HHColors.brand,
-        foregroundColor: Colors.white,
-        icon: const Text('🏠', style: TextStyle(fontSize: 18)),
-        label: const Text('Post Listing',
-          style: TextStyle(fontWeight: FontWeight.w800)),
-        onPressed: () => Navigator.push(context, MaterialPageRoute(
-          builder: (_) => const HHPostListingScreen())),
+      bottom: PreferredSize(
+        preferredSize: const Size.fromHeight(1),
+        child: Divider(color: HHColors.border, height: 1)),
+    );
+  }
+
+  Widget _buildFilterRow() {
+    return SizedBox(
+      height: 52,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+        itemCount: _filterLabels.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 7),
+        itemBuilder: (_, i) => HHChip(
+          label: _filterLabels[i],
+          active: _filter == i,
+          onTap: _moduleEnabled ? () {
+            setState(() => _filter = i);
+            _loadListings();
+          } : null,
+        ),
       ),
     );
+  }
+
+  Widget _buildError() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 40),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text('😕', style: TextStyle(fontSize: 40)),
+            const SizedBox(height: 12),
+            Text(_error!,
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 13, color: HHColors.text3)),
+            const SizedBox(height: 16),
+            GestureDetector(
+              onTap: _loadListings,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20, vertical: 10),
+                decoration: BoxDecoration(
+                  color: HHColors.brandPale,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: HHColors.brand)),
+                child: Text('Retry',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: HHColors.brand)),
+              )),
+          ])));
+  }
+
+  Widget _buildEmpty() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Text('🏚', style: TextStyle(fontSize: 40)),
+          const SizedBox(height: 12),
+          Text('No listings found',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: HHColors.text)),
+          const SizedBox(height: 4),
+          Text('Try a different filter',
+            style: TextStyle(fontSize: 12, color: HHColors.text3)),
+        ]));
+  }
+
+  void _openDetail(HousingListing l) {
+    Navigator.push(context,
+      MaterialPageRoute(
+        builder: (_) => HHListingDetailScreen(listing: l)));
   }
 }
 
 // ─────────────────────────────────────────────────────────────
 //  SCREEN 2 — Listing Detail
-//  GET  /api/v1/housing/listings/<uuid>/
-//  POST /api/v1/housing/listings/<uuid>/save/
 // ─────────────────────────────────────────────────────────────
 class HHListingDetailScreen extends StatefulWidget {
-  final String  listingId;
-  final String  title, price, location, type, emoji;
-
-  const HHListingDetailScreen({
-    super.key,
-    this.listingId = '',
-    this.title     = '',
-    this.price     = '',
-    this.location  = '',
-    this.type      = 'Apartment',
-    this.emoji     = '🏠',
-  });
+  final HousingListing listing;
+  const HHListingDetailScreen({super.key, required this.listing});
 
   @override
   State<HHListingDetailScreen> createState() =>
       _HHListingDetailScreenState();
 }
 
-class _HHListingDetailScreenState
-    extends State<HHListingDetailScreen> {
+class _HHListingDetailScreenState extends State<HHListingDetailScreen> {
   Map<String, dynamic>? _detail;
-  bool    _loadingDetail = true;
-  bool    _saved         = false;
-  bool    _saving        = false;
+  bool _loadingDetail = true;
+  bool _saved  = false;
+  bool _saving = false;
+
+  HousingListing get l => widget.listing;
 
   @override
   void initState() {
     super.initState();
-    if (widget.listingId.isNotEmpty) _fetchDetail();
-    else setState(() => _loadingDetail = false);
+    _fetchDetail();
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  GET /api/v1/housing/listings/<uuid>/
-  // ─────────────────────────────────────────────────────────
   Future<void> _fetchDetail() async {
+    if (l.id.isEmpty) {
+      if (mounted) setState(() => _loadingDetail = false);
+      return;
+    }
     try {
-      final res = await ApiClient.get(
-          '/api/v1/housing/listings/${widget.listingId}/');
-      dev.log('[ListingDetail] GET → ${res.statusCode}');
+      final res = await ApiClient.get('/api/v1/housing/listings/${l.id}/');
+      dev.log('[HHDetail] GET → ${res.statusCode}');
+      dev.log('[HHDetail] body → ${res.body}');
       if (!mounted) return;
       if (res.statusCode == 200) {
-        final decoded =
-            jsonDecode(res.body) as Map<String, dynamic>?;
+        final body = jsonDecode(res.body) as Map<String, dynamic>?;
+        // Shape: { "success": true, "data": { ...listing... } }
+        // or just the flat listing object
+        final data = (body?['data'] is Map
+            ? body!['data'] as Map<String, dynamic>
+            : body) ?? {};
         setState(() {
-          _detail        = decoded;
-          _saved         = decoded?['is_saved'] as bool? ?? false;
+          _detail        = data;
+          _saved         = data['isSaved'] as bool? ?? false;  // ← camelCase
           _loadingDetail = false;
         });
       } else {
         setState(() => _loadingDetail = false);
       }
     } catch (e) {
-      dev.log('[ListingDetail] error: $e');
+      dev.log('[HHDetail] error: $e');
       if (mounted) setState(() => _loadingDetail = false);
     }
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  POST /api/v1/housing/listings/<uuid>/save/
-  // ─────────────────────────────────────────────────────────
   Future<void> _toggleSave() async {
-    if (widget.listingId.isEmpty || _saving) return;
+    if (_saving || l.id.isEmpty) return;
     HapticFeedback.selectionClick();
     setState(() { _saved = !_saved; _saving = true; });
     try {
       final res = await ApiClient.post(
-          '/api/v1/housing/listings/${widget.listingId}/save/');
-      dev.log('[ListingDetail] POST /save/ → ${res.statusCode}');
+        '/api/v1/housing/listings/${l.id}/save/');
+      dev.log('[HHDetail] POST /save/ → ${res.statusCode}');
       if (!mounted) return;
       if (res.statusCode != 200 && res.statusCode != 201) {
         setState(() => _saved = !_saved);
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Could not save listing.')));
+        _snack('Could not save listing.', color: HHColors.coral);
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(_saved
-            ? 'Listing saved ❤️' : 'Listing removed'),
-          backgroundColor: HHColors.teal,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12)),
-        ));
+        _snack(_saved ? 'Saved to your list ❤️' : 'Removed from saved',
+          color: HHColors.teal);
       }
     } catch (e) {
-      dev.log('[ListingDetail] save error: $e');
+      dev.log('[HHDetail] save error: $e');
       if (mounted) setState(() => _saved = !_saved);
     } finally {
       if (mounted) setState(() => _saving = false);
     }
   }
 
-  String _field(String key, String fallback) =>
-      _detail?[key]?.toString() ?? fallback;
+  void _snack(String msg, {Color? color}) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg,
+        style: const TextStyle(fontWeight: FontWeight.w600)),
+      backgroundColor: color ?? HHColors.brand,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12)),
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+    ));
+  }
+
+  // camelCase keys — matches HousingListingSerializer exactly
+  String _f(String key, String fallback) =>
+    _detail?[key]?.toString() ?? fallback;
+
+  List<String> _listField(String key, List<String> fallback) =>
+    (_detail?[key] as List?)?.map((e) => e.toString()).toList() ?? fallback;
 
   @override
   Widget build(BuildContext context) {
-    final title    = _field('title',    widget.title);
-    final price    = _field('price',    widget.price);
-    final location = _field('location', widget.location);
-    final type     = _field('type',     widget.type);
-    final emoji    = widget.emoji;
-
-    final amenities = (_detail?['amenities'] as List?)
-        ?.map((e) => e.toString()).toList() ?? [];
-    final contact   = _field('contact',     '');
-    final caretaker = _field('caretaker',   '');
-    final available = _field('availability','');
-    final about     = _field('description', '');
-    final bedrooms  = _field('bedrooms',    '—');
-    final bathrooms = _field('bathrooms',   '—');
-    final size      = _field('size_sqm',    '—');
-    final floor     = _field('floor',       '—');
+    final title     = _f('title',         l.title);
+    final rent      = _f('rentPerMonth',  l.rentPerMonth);   // ← camelCase
+    final location  = _f('locationName',  l.locationName);   // ← camelCase
+    final about     = _f('description',   l.description ?? '');
+    final available = _f('availableFrom', l.availableFrom ?? '');  // ← camelCase
+    final bedrooms  = _detail?['bedrooms']?.toString() ?? l.bedrooms?.toString() ?? '—';
+    final bathrooms = _detail?['bathrooms']?.toString() ?? l.bathrooms?.toString() ?? '—';
+    final amenities = _listField('amenities', l.amenities);
+    final tags      = _listField('tags',      l.tags);
+    final imageUrls = _listField('imageUrls', l.imageUrls);  // ← camelCase
 
     return Scaffold(
       backgroundColor: HHColors.surface2,
       body: CustomScrollView(slivers: [
+
         SliverAppBar(
-          expandedHeight: 230,
-          pinned: false,
-          backgroundColor: Colors.transparent,
+          expandedHeight: 260,
+          pinned: true,
+          backgroundColor: l.gradA,
           leading: GestureDetector(
             onTap: () => Navigator.pop(context),
             child: Container(
@@ -450,29 +599,67 @@ class _HHListingDetailScreenState
                   borderRadius: BorderRadius.circular(11)),
                 child: Padding(
                   padding: const EdgeInsets.all(8),
-                  child: Text(_saved ? '❤️' : '🤍',
-                    style: const TextStyle(fontSize: 18))))),
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 200),
+                    child: Text(
+                      _saved ? '❤️' : '🤍',
+                      key: ValueKey(_saved),
+                      style: const TextStyle(fontSize: 18)))))),
           ],
           flexibleSpace: FlexibleSpaceBar(
             background: Container(
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 gradient: LinearGradient(
-                  colors: [Color(0xFFFDF0EC), Color(0xFFF4C5B5)],
+                  colors: [l.gradA, l.gradB],
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight)),
               child: Stack(children: [
-                Center(child: Text(emoji,
-                  style: const TextStyle(fontSize: 90))),
-                Positioned(bottom: 10, right: 14,
+                if (imageUrls.isNotEmpty)
+                  Positioned.fill(
+                    child: ClipRRect(
+                      child: Image.network(
+                        imageUrls.first,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => Center(
+                          child: Text(l.emoji,
+                            style: const TextStyle(fontSize: 100))))))
+                else
+                  Center(child: Text(l.emoji,
+                    style: const TextStyle(fontSize: 100))),
+
+                Positioned(bottom: 16, left: 16,
                   child: Container(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 8, vertical: 4),
+                      horizontal: 10, vertical: 5),
                     decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.5),
-                      borderRadius: BorderRadius.circular(8)),
-                    child: const Text('1 / 5', style: TextStyle(
-                      fontSize: 11, fontWeight: FontWeight.w800,
-                      color: Colors.white)))),
+                      color: l.typeColor,
+                      borderRadius: BorderRadius.circular(20)),
+                    child: Text(l.tagLabel,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white)))),
+                Positioned(bottom: 16, right: 16,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.95),
+                      borderRadius: BorderRadius.circular(12)),
+                    child: RichText(
+                      text: TextSpan(children: [
+                        TextSpan(
+                          text: rent.isNotEmpty ? 'KES $rent' : '—',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w900,
+                            color: HHColors.brand)),
+                        TextSpan(
+                          text: '/mo',
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: HHColors.text3)),
+                      ])))),
               ]),
             ),
           ),
@@ -481,709 +668,343 @@ class _HHListingDetailScreenState
         SliverToBoxAdapter(
           child: _loadingDetail
             ? const Padding(
-                padding: EdgeInsets.symmetric(vertical: 40),
-                child: Center(child: CircularProgressIndicator()))
-            : SingleChildScrollView(
-                physics: const NeverScrollableScrollPhysics(),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(
-                        16, 14, 16, 0),
-                      child: Row(
-                        crossAxisAlignment:
-                          CrossAxisAlignment.start,
-                        children: [
-                          Expanded(child: Text(title,
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w900,
-                              color: HHColors.text,
-                              height: 1.25,
-                              fontStyle: FontStyle.italic))),
-                          const SizedBox(width: 12),
-                          Column(
-                            crossAxisAlignment:
-                              CrossAxisAlignment.end,
-                            children: [
-                              Text(price, style: TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.w900,
-                                color: HHColors.brand)),
-                              Text('/month', style: TextStyle(
-                                fontSize: 11,
-                                color: HHColors.text3)),
-                            ]),
-                        ])),
+                padding: EdgeInsets.symmetric(vertical: 80),
+                child: Center(
+                  child: CircularProgressIndicator(color: HHColors.brand)))
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 16),
 
-                    const SizedBox(height: 10),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16),
-                      child: Wrap(spacing: 6, runSpacing: 6,
-                        children: [
-                          HHTag('🏠 $type',
-                            bg: HHColors.brandPale,
-                            fg: HHColors.brand),
-                          HHTag('Available',
-                            bg: HHColors.greenPale,
-                            fg: HHColors.green),
-                        ])),
-
-                    const SizedBox(height: 8),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16),
-                      child: Text(location, style: TextStyle(
-                        fontSize: 12, color: HHColors.text3))),
-
-                    const SizedBox(height: 14),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16),
-                      child: Row(children: [
-                        _InfoChip(label: bedrooms,
-                          sub: 'Bedrooms'),
-                        const SizedBox(width: 8),
-                        _InfoChip(label: bathrooms,
-                          sub: 'Bathroom'),
-                        const SizedBox(width: 8),
-                        _InfoChip(label: size,    sub: 'sq.m'),
-                        const SizedBox(width: 8),
-                        _InfoChip(label: floor,   sub: 'Floor'),
-                      ])),
-
-                    if (amenities.isNotEmpty) ...[
-                      const SizedBox(height: 14),
-                      HHSectionLabel(title: 'Amenities'),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16),
-                        child: Wrap(spacing: 8, runSpacing: 8,
-                          children: amenities.map((a) =>
-                            HHTag(a,
-                              bg: HHColors.greenPale,
-                              fg: HHColors.green)
-                          ).toList())),
-                    ],
-
-                    const SizedBox(height: 14),
-                    if (about.isNotEmpty)
-                      HHFormField(
-                        label: 'About this listing',
-                        value: about,
-                        multiline: true),
-                    if (contact.isNotEmpty)
-                      HHFormField(
-                        label: 'Contact',
-                        value: '📞 $contact'),
-                    if (caretaker.isNotEmpty)
-                      HHFormField(
-                        label: 'Caretaker',
-                        value: caretaker),
-                    if (available.isNotEmpty)
-                      HHFormField(
-                        label: 'Available from',
-                        value: available),
-
-                    const SizedBox(height: 14),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16),
-                      child: Row(children: [
-                        Expanded(child: OutlinedButton(
-                          style: OutlinedButton.styleFrom(
-                            side: BorderSide(
-                              color: HHColors.brand),
-                            foregroundColor: HHColors.brand,
-                            shape: RoundedRectangleBorder(
-                              borderRadius:
-                                BorderRadius.circular(12)),
-                            padding: const EdgeInsets.symmetric(
-                              vertical: 14)),
-                          onPressed: _toggleSave,
-                          child: Text(
-                            _saved ? 'Saved ❤️' : 'Save',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w800)))),
-                        const SizedBox(width: 10),
-                        Expanded(flex: 3,
-                          child: ElevatedButton(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: HHColors.brand,
-                              foregroundColor: Colors.white,
-                              shape: RoundedRectangleBorder(
-                                borderRadius:
-                                  BorderRadius.circular(12)),
-                              padding:
-                                const EdgeInsets.symmetric(
-                                  vertical: 14)),
-                            onPressed: () =>
-                              ScaffoldMessenger.of(context)
-                                .showSnackBar(const SnackBar(
-                                  content: Text(
-                                    'Contacting agent...'))),
-                            child: const Text('Contact Agent',
-                              style: TextStyle(
-                                fontWeight: FontWeight.w800)))),
-                      ])),
-                    const SizedBox(height: 40),
-                  ]),
-              ),
-        ),
-      ]),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-//  SCREEN 3 — Post Listing
-//  POST /api/v1/housing/uploads/    → upload photo
-//  POST /api/v1/housing/listings/   → create listing
-// ─────────────────────────────────────────────────────────────
-class HHPostListingScreen extends StatefulWidget {
-  const HHPostListingScreen({super.key});
-  @override
-  State<HHPostListingScreen> createState() =>
-      _HHPostListingScreenState();
-}
-
-class _HHPostListingScreenState extends State<HHPostListingScreen> {
-  String _type     = 'Apartment';
-  String _location = 'Westlands';
-  bool   _wifi     = true;
-  bool   _parking  = false;
-  bool   _furnished= true;
-  bool   _publishing = false;
-  String _uploadedImageUrl = '';
-
-  final _titleCtrl = TextEditingController();
-  final _priceCtrl = TextEditingController();
-  final _descCtrl  = TextEditingController();
-  final _contactCtrl = TextEditingController();
-
-  static const _types = [
-    'Apartment', 'Single Room', 'Shared', 'Bedsitter',
-  ];
-  static const _locations = [
-    'Westlands', 'Parklands', 'CBD', 'Ngara', 'Highridge',
-  ];
-
-  @override
-  void dispose() {
-    _titleCtrl.dispose();
-    _priceCtrl.dispose();
-    _descCtrl.dispose();
-    _contactCtrl.dispose();
-    super.dispose();
-  }
-
-  // ─────────────────────────────────────────────────────────
-  //  POST /api/v1/housing/uploads/
-  // ─────────────────────────────────────────────────────────
-  Future<void> _uploadPhoto() async {
-    HapticFeedback.selectionClick();
-    // TODO: pick file via image_picker, send as multipart
-    try {
-      final res = await ApiClient.post(
-          '/api/v1/housing/uploads/',
-          body: {'placeholder': true});
-      dev.log('[PostListing] POST /uploads/ → ${res.statusCode}');
-      if (!mounted) return;
-      if (res.statusCode == 200 || res.statusCode == 201) {
-        final decoded =
-            jsonDecode(res.body) as Map<String, dynamic>?;
-        setState(() =>
-            _uploadedImageUrl =
-              decoded?['url']?.toString() ?? '');
-      }
-    } catch (e) {
-      dev.log('[PostListing] upload error: $e');
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────
-  //  POST /api/v1/housing/listings/
-  // ─────────────────────────────────────────────────────────
-  Future<void> _publish() async {
-    if (_titleCtrl.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Please add a listing title.')));
-      return;
-    }
-    if (_priceCtrl.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Please enter the monthly rent.')));
-      return;
-    }
-
-    setState(() => _publishing = true);
-    try {
-      final amenities = <String>[
-        if (_wifi) 'WiFi',
-        if (_parking) 'Parking',
-        if (_furnished) 'Furnished',
-      ];
-      final payload = <String, dynamic>{
-        'type':        _type,
-        'title':       _titleCtrl.text.trim(),
-        'price':       _priceCtrl.text.trim(),
-        'location':    _location,
-        'description': _descCtrl.text.trim(),
-        'contact':     _contactCtrl.text.trim(),
-        'amenities':   amenities,
-        if (_uploadedImageUrl.isNotEmpty)
-          'image_url': _uploadedImageUrl,
-      };
-
-      final res = await ApiClient.post(
-          '/api/v1/housing/listings/', body: payload);
-      dev.log('[PostListing] POST /listings/ → ${res.statusCode}');
-
-      if (!mounted) return;
-      if (res.statusCode == 201 || res.statusCode == 200) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(
-            '✅ "${_titleCtrl.text.trim()}" is live!'),
-          backgroundColor: HHColors.teal,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12)),
-          duration: const Duration(seconds: 3)));
-      } else {
-        final errBody =
-            jsonDecode(res.body) as Map<String, dynamic>?;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(errBody?['detail']?.toString()
-            ?? 'Could not publish (${res.statusCode}).'),
-          backgroundColor: HHColors.brandDark,
-        ));
-      }
-    } catch (e) {
-      dev.log('[PostListing] error: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Network error. Please try again.')));
-      }
-    } finally {
-      if (mounted) setState(() => _publishing = false);
-    }
-  }
-
-  String _typeEmoji(String t) => switch (t) {
-    'Apartment'   => '🏠',
-    'Single Room' => '🛏',
-    'Shared'      => '🏘',
-    'Bedsitter'   => '🏣',
-    _             => '🏠',
-  };
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: HHColors.surface2,
-      appBar: AppBar(
-        backgroundColor: HHColors.surface,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.close, color: HHColors.text),
-          onPressed: () => Navigator.pop(context),
-        ),
-        title: const Text('Post a Listing', style: TextStyle(
-          fontSize: 16, fontWeight: FontWeight.w800,
-          color: HHColors.text)),
-        actions: [
-          TextButton(
-            onPressed: _publishing ? null : _publish,
-            child: Text(
-              _publishing ? 'Publishing…' : 'Publish',
-              style: TextStyle(
-                fontWeight: FontWeight.w800,
-                color: _publishing
-                  ? HHColors.text3 : HHColors.brand)),
-          ),
-        ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(1),
-          child: Divider(color: HHColors.border, height: 1)),
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.only(bottom: 40),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-              child: Text(
-                'Create a listing and reach students near campus 🏠',
-                style: TextStyle(
-                  fontSize: 13, color: HHColors.text2))),
-
-            // Photo upload
-            GestureDetector(
-              onTap: _uploadPhoto,
-              child: Container(
-                margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                height: 100,
-                decoration: BoxDecoration(
-                  color: _uploadedImageUrl.isNotEmpty
-                    ? HHColors.greenPale : HHColors.brandPale,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(
-                    color: _uploadedImageUrl.isNotEmpty
-                      ? HHColors.green.withOpacity(0.4)
-                      : HHColors.brand.withOpacity(0.3))),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(_uploadedImageUrl.isNotEmpty
-                      ? '✅' : '📷',
-                      style: const TextStyle(fontSize: 28)),
-                    const SizedBox(height: 6),
-                    Text(
-                      _uploadedImageUrl.isNotEmpty
-                        ? 'Photo uploaded — tap to replace'
-                        : 'Tap to add photos',
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Text(title,
                       style: TextStyle(
-                        fontSize: 12, fontWeight: FontWeight.w600,
-                        color: _uploadedImageUrl.isNotEmpty
-                          ? HHColors.green : HHColors.brand)),
-                  ]),
-              )),
+                        fontSize: 20,
+                        fontWeight: FontWeight.w900,
+                        color: HHColors.text,
+                        height: 1.2,
+                        fontStyle: FontStyle.italic))),
+                  const SizedBox(height: 6),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Row(children: [
+                      const Text('📍', style: TextStyle(fontSize: 13)),
+                      const SizedBox(width: 4),
+                      Expanded(child: Text(location,
+                        style: TextStyle(fontSize: 12, color: HHColors.text3))),
+                    ])),
 
-            HHSectionLabel(title: 'Property Type'),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: GridView.count(
-                crossAxisCount: 2, shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                mainAxisSpacing: 8, crossAxisSpacing: 8,
-                childAspectRatio: 2.5,
-                children: _types.map<Widget>((t) =>
-                  GestureDetector(
-                    onTap: () => setState(() => _type = t),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 180),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 10),
-                      decoration: BoxDecoration(
-                        color: _type == t
-                          ? HHColors.brandPale : HHColors.surface,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: _type == t
-                            ? HHColors.brand : HHColors.border,
-                          width: 1.5)),
-                      child: Row(children: [
-                        Text(_typeEmoji(t),
-                          style: const TextStyle(fontSize: 16)),
-                        const SizedBox(width: 8),
-                        Text(t, style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                          color: _type == t
-                            ? HHColors.brand : HHColors.text2)),
-                      ]),
-                    ),
-                  )).toList(),
-              )),
-            const SizedBox(height: 14),
+                  if (tags.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Wrap(spacing: 6, runSpacing: 6,
+                        children: tags.map((tag) => HHTag(
+                          HousingListing.labelFor(tag),
+                          bg: l.typePale,
+                          fg: l.typeColor,
+                        )).toList())),
+                  ],
 
-            _TextInputField(
-              label: 'Listing Title *',
-              hint: 'e.g. Spacious 2BR — Westlands',
-              controller: _titleCtrl),
-            _TextInputField(
-              label: 'Monthly Rent (KES) *',
-              hint: 'e.g. 28,000',
-              controller: _priceCtrl,
-              keyboardType: TextInputType.number),
+                  const SizedBox(height: 16),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Row(children: [
+                      _StatChip(value: bedrooms,  label: 'Bedrooms'),
+                      const SizedBox(width: 8),
+                      _StatChip(value: bathrooms, label: 'Bathrooms'),
+                      const SizedBox(width: 8),
+                      _StatChip(
+                        value: available.isNotEmpty ? available : 'Now',
+                        label: 'Available',
+                        small: available.length > 6),
+                    ])),
 
-            HHSectionLabel(title: 'Location'),
-            SizedBox(height: 50,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                itemCount: _locations.length,
-                separatorBuilder: (_, __) =>
-                    const SizedBox(width: 7),
-                itemBuilder: (_, i) => HHChip(
-                  label: _locations[i],
-                  active: _location == _locations[i],
-                  onTap: () => setState(
-                    () => _location = _locations[i]),
-                ),
-              )),
-            const SizedBox(height: 14),
+                  if (amenities.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    HHSectionLabel(title: 'Amenities'),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Wrap(spacing: 8, runSpacing: 8,
+                        children: amenities.map((a) => HHTag(a,
+                          bg: HHColors.greenPale,
+                          fg: HHColors.teal,
+                        )).toList())),
+                  ],
 
-            HHSectionLabel(title: 'Amenities'),
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 16),
-              decoration: HHTheme.cardSm,
-              child: Column(children: [
-                HHToggleRow(
-                  label: '📶 WiFi included',
-                  subtitle: 'Landlord provides internet',
-                  value: _wifi,
-                  onChanged: (v) => setState(() => _wifi = v)),
-                Divider(color: HHColors.border, height: 1),
-                HHToggleRow(
-                  label: '🅿️ Parking',
-                  subtitle: 'Secure parking available',
-                  value: _parking,
-                  onChanged: (v) =>
-                      setState(() => _parking = v)),
-                Divider(color: HHColors.border, height: 1),
-                HHToggleRow(
-                  label: '🪑 Furnished',
-                  subtitle: 'Basic furniture included',
-                  value: _furnished,
-                  onChanged: (v) =>
-                      setState(() => _furnished = v)),
-              ])),
-            const SizedBox(height: 14),
+                  if (about.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    HHSectionLabel(title: 'About this listing'),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Text(about,
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: HHColors.text2,
+                          height: 1.65))),
+                  ],
 
-            _TextInputField(
-              label: 'Description',
-              hint: 'Describe the property, nearby landmarks, transport…',
-              controller: _descCtrl,
-              maxLines: 4),
-            _TextInputField(
-              label: 'Contact Number *',
-              hint: '07XX XXX XXX',
-              controller: _contactCtrl,
-              keyboardType: TextInputType.phone),
+                  if (imageUrls.length > 1) ...[
+                    const SizedBox(height: 4),
+                    HHSectionLabel(title: 'Photos'),
+                    SizedBox(
+                      height: 100,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        separatorBuilder: (_, __) => const SizedBox(width: 8),
+                        itemCount: imageUrls.length,
+                        itemBuilder: (_, i) => ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: Image.network(
+                            imageUrls[i],
+                            width: 130,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => Container(
+                              width: 130,
+                              color: HHColors.surface2,
+                              child: const Center(
+                                child: Text('🖼',
+                                  style: TextStyle(fontSize: 28)))))))),
+                  ],
 
-            HHPrimaryButton(
-              label: _publishing
-                ? '⏳ Publishing…' : '🏠 Publish Listing',
-              onTap: _publishing ? null : _publish,
-            ),
-          ]),
-      ),
-    );
-  }
-}
+                  const SizedBox(height: 24),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Row(children: [
+                      GestureDetector(
+                        onTap: _toggleSave,
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 14),
+                          decoration: BoxDecoration(
+                            color: _saved ? HHColors.brandPale : HHColors.surface,
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                              color: _saved ? HHColors.brand : HHColors.border,
+                              width: 1.5)),
+                          child: Text(
+                            _saved ? '❤️  Saved' : '🤍  Save',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w800,
+                              color: _saved ? HHColors.brand : HHColors.text2)))),
+                      const SizedBox(width: 10),
+                      Expanded(child: GestureDetector(
+                        onTap: () => _snack('Contacting agent…', color: HHColors.teal),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          decoration: BoxDecoration(
+                            color: HHColors.brand,
+                            borderRadius: BorderRadius.circular(14)),
+                          child: const Center(
+                            child: Text('Contact Agent',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w800,
+                                color: Colors.white)))))),
+                    ])),
 
-// ─────────────────────────────────────────────────────────────
-//  Private helpers
-// ─────────────────────────────────────────────────────────────
-
-/// Inline search bar used in place of HHSearchBar when live
-/// text input (onChanged) is required. Does NOT touch hh_widgets.dart.
-class _HHInlineSearchBar extends StatelessWidget {
-  final String hint;
-  final ValueChanged<String> onChanged;
-  const _HHInlineSearchBar({
-    required this.hint,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 13, 16, 0),
-      decoration: BoxDecoration(
-        color: HHColors.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: HHColors.border, width: 1.5),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.08),
-            blurRadius: 10,
-            offset: const Offset(0, 2)),
-        ],
-      ),
-      child: Row(children: [
-        const Padding(
-          padding: EdgeInsets.only(left: 14),
-          child: Text('🔍', style: TextStyle(fontSize: 16))),
-        Expanded(
-          child: TextField(
-            onChanged: onChanged,
-            decoration: InputDecoration(
-              hintText: hint,
-              hintStyle: TextStyle(
-                fontSize: 13, color: HHColors.text3),
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 10, vertical: 11),
-              border: InputBorder.none),
-          ),
-        ),
-        Container(
-          margin: const EdgeInsets.only(right: 10),
-          padding: const EdgeInsets.symmetric(
-            horizontal: 9, vertical: 5),
-          decoration: BoxDecoration(
-            color: HHColors.brandPale,
-            borderRadius: BorderRadius.circular(8)),
-          child: Text('Filter', style: TextStyle(
-            fontSize: 11, fontWeight: FontWeight.w800,
-            color: HHColors.brand)),
-        ),
+                  const SizedBox(height: 48),
+                ])),
       ]),
     );
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+//  Private widgets
+// ─────────────────────────────────────────────────────────────
 class _ListingCard extends StatelessWidget {
-  final _Listing listing;
+  final HousingListing listing;
   final VoidCallback onTap;
   const _ListingCard({required this.listing, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
+    final l = listing;
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 14),
         decoration: HHTheme.card,
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+
             Container(
-              height: 130,
+              height: 140,
               decoration: BoxDecoration(
                 gradient: LinearGradient(
-                  colors: [listing.gradA, listing.gradB],
+                  colors: [l.gradA, l.gradB],
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight),
                 borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(18)),
-              ),
+                  top: Radius.circular(18))),
               child: Stack(children: [
-                Center(child: Text(listing.emoji,
-                  style: const TextStyle(fontSize: 52))),
+                if (l.imageUrls.isNotEmpty)
+                  Positioned.fill(
+                    child: ClipRRect(
+                      borderRadius: const BorderRadius.vertical(
+                        top: Radius.circular(18)),
+                      child: Image.network(
+                        l.imageUrls.first,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => Center(
+                          child: Text(l.emoji,
+                            style: const TextStyle(fontSize: 58))))))
+                else
+                  Center(child: Text(l.emoji,
+                    style: const TextStyle(fontSize: 58))),
+
                 Positioned(top: 10, left: 10,
                   child: Container(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 8, vertical: 3),
+                      horizontal: 9, vertical: 4),
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.9),
-                      borderRadius: BorderRadius.circular(8)),
-                    child: Text(listing.type, style: TextStyle(
-                      fontSize: 10, fontWeight: FontWeight.w800,
-                      color: listing.typeColor)))),
+                      color: l.typeColor,
+                      borderRadius: BorderRadius.circular(20)),
+                    child: Text(l.tagLabel,
+                      style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white)))),
                 Positioned(top: 10, right: 10,
-                  child: Container(width: 28, height: 28,
+                  child: Container(
+                    width: 32, height: 32,
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.9),
+                      color: Colors.white.withOpacity(0.90),
                       shape: BoxShape.circle),
-                    child: const Center(child: Text('🤍',
-                      style: TextStyle(fontSize: 13))))),
-              ]),
-            ),
+                    child: const Center(
+                      child: Text('🤍', style: TextStyle(fontSize: 14))))),
+              ])),
+
             Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(listing.title, style: TextStyle(
-                    fontSize: 14, fontWeight: FontWeight.w800,
-                    color: HHColors.text)),
+
+                  Text(l.title,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                      color: HHColors.text),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis),
+                  const SizedBox(height: 5),
+
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.baseline,
+                    textBaseline: TextBaseline.alphabetic,
+                    children: [
+                      Text('KES ${l.rentPerMonth}',
+                        style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w900,
+                          color: HHColors.brand)),
+                      const SizedBox(width: 3),
+                      Text('/month',
+                        style: TextStyle(fontSize: 11, color: HHColors.text3)),
+                    ]),
                   const SizedBox(height: 4),
+
                   Row(children: [
-                    Text(listing.price, style: TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.w900,
-                      color: HHColors.brand)),
-                    Text(' /month', style: TextStyle(
-                      fontSize: 11, color: HHColors.text3)),
+                    const Text('📍', style: TextStyle(fontSize: 11)),
+                    const SizedBox(width: 3),
+                    Expanded(child: Text(l.locationName,
+                      style: TextStyle(fontSize: 11, color: HHColors.text3),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis)),
                   ]),
-                  const SizedBox(height: 3),
-                  Text(listing.location, style: TextStyle(
-                    fontSize: 11, color: HHColors.text3)),
-                  if (listing.tags.isNotEmpty) ...[
+
+                  if (l.tags.length > 1) ...[
                     const SizedBox(height: 8),
                     Wrap(spacing: 5, runSpacing: 5,
-                      children: listing.tags.map<Widget>((t) =>
-                        HHTag(t,
-                          bg: HHColors.greenPale,
-                          fg: HHColors.teal)
+                      children: l.tags.skip(1).map<Widget>((tag) =>
+                        HHTag(HousingListing.labelFor(tag),
+                          bg: l.typePale,
+                          fg: l.typeColor)
                       ).toList()),
                   ],
+
+                  if (l.amenities.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Wrap(spacing: 5, runSpacing: 5,
+                      children: l.amenities
+                          .take(3)
+                          .map<Widget>((a) => HHTag(a,
+                            bg: HHColors.surface2,
+                            fg: HHColors.text2))
+                          .toList()),
+                  ],
+
                   const SizedBox(height: 10),
                   Divider(color: HHColors.border, height: 1),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 10),
+
                   Row(
-                    mainAxisAlignment:
-                      MainAxisAlignment.spaceBetween,
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text('📅 ${listing.availability}',
-                        style: TextStyle(
-                          fontSize: 11, color: HHColors.text3)),
+                      Row(children: [
+                        const Text('📅', style: TextStyle(fontSize: 11)),
+                        const SizedBox(width: 4),
+                        Text(
+                          l.availableFrom ?? 'Available now',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: l.availableFrom != null
+                              ? HHColors.text3
+                              : HHColors.green,
+                            fontWeight: l.availableFrom == null
+                              ? FontWeight.w700
+                              : FontWeight.normal)),
+                      ]),
                       Container(
                         padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 6),
+                          horizontal: 14, vertical: 7),
                         decoration: BoxDecoration(
                           color: HHColors.brand,
-                          borderRadius: BorderRadius.circular(9)),
-                        child: const Text('View →', style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w800,
-                          color: Colors.white))),
+                          borderRadius: BorderRadius.circular(10)),
+                        child: const Text('View →',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.white))),
                     ]),
-                ]),
-            ),
-          ]),
-      ),
+                ])),
+          ])),
     );
   }
 }
 
-class _InfoChip extends StatelessWidget {
-  final String label, sub;
-  const _InfoChip({required this.label, required this.sub});
-  @override
-  Widget build(BuildContext context) => Expanded(child: Container(
-    padding: const EdgeInsets.symmetric(vertical: 10),
-    decoration: BoxDecoration(
-      color: HHColors.brandPale,
-      borderRadius: BorderRadius.circular(12)),
-    child: Column(children: [
-      Text(label, style: TextStyle(
-        fontSize: 16, fontWeight: FontWeight.w900,
-        color: HHColors.brand)),
-      Text(sub, style: TextStyle(
-        fontSize: 10, color: HHColors.text3)),
-    ]),
-  ));
-}
-
-class _TextInputField extends StatelessWidget {
-  final String label, hint;
-  final TextEditingController controller;
-  final int maxLines;
-  final TextInputType? keyboardType;
-  const _TextInputField({
+class _StatChip extends StatelessWidget {
+  final String value;
+  final String label;
+  final bool small;
+  const _StatChip({
+    required this.value,
     required this.label,
-    required this.hint,
-    required this.controller,
-    this.maxLines = 1,
-    this.keyboardType,
+    this.small = false,
   });
+
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-    child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: TextStyle(
-          fontSize: 12, fontWeight: FontWeight.w700,
-          color: HHColors.text2)),
-        const SizedBox(height: 6),
-        Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: HHColors.border)),
-          child: TextField(
-            controller: controller,
-            maxLines: maxLines,
-            keyboardType: keyboardType,
-            decoration: InputDecoration(
-              hintText: hint,
-              hintStyle: TextStyle(
-                fontSize: 13, color: HHColors.text3),
-              contentPadding: const EdgeInsets.all(14),
-              border: InputBorder.none))),
-      ]));
+  Widget build(BuildContext context) => Expanded(
+    child: Container(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      decoration: BoxDecoration(
+        color: HHColors.brandPale,
+        borderRadius: BorderRadius.circular(12)),
+      child: Column(children: [
+        Text(value,
+          style: TextStyle(
+            fontSize: small ? 12 : 16,
+            fontWeight: FontWeight.w900,
+            color: HHColors.brand)),
+        const SizedBox(height: 2),
+        Text(label,
+          style: TextStyle(fontSize: 10, color: HHColors.text3)),
+      ])));
 }

@@ -22,10 +22,10 @@ import '../../../core/api_client.dart';
 class _Stats {
   final int listings, matches, nearCampus, alerts;
   const _Stats({
-    this.listings  = 0,
-    this.matches   = 0,
-    this.nearCampus= 0,
-    this.alerts    = 0,
+    this.listings   = 0,
+    this.matches    = 0,
+    this.nearCampus = 0,
+    this.alerts     = 0,
   });
 
   factory _Stats.fromJson(Map<String, dynamic> j) => _Stats(
@@ -34,65 +34,6 @@ class _Stats {
     nearCampus: (j['near_campus'] as num?)?.toInt() ?? 0,
     alerts:     (j['alerts']      as num?)?.toInt() ?? 0,
   );
-}
-
-class _PreviewListing {
-  final String id, type, title, price, location, emoji;
-  final Color gradA, gradB, typeColor;
-  final List<String> tags;
-
-  const _PreviewListing({
-    required this.id,
-    required this.type,
-    required this.title,
-    required this.price,
-    required this.location,
-    required this.emoji,
-    required this.gradA,
-    required this.gradB,
-    required this.typeColor,
-    required this.tags,
-  });
-
-  factory _PreviewListing.fromJson(Map<String, dynamic> j) {
-    final type = j['type']?.toString() ?? 'Other';
-    return _PreviewListing(
-      id:       j['id']?.toString() ?? '',
-      type:     type,
-      title:    j['title']?.toString() ?? '',
-      price:    j['price']?.toString() ?? '',
-      location: j['location']?.toString() ?? '',
-      tags:     (j['tags'] as List?)?.map((e) => e.toString()).toList() ?? [],
-      emoji:    switch (type) {
-        'Apartment'   => '🏠',
-        'Single Room' => '🛏',
-        'Shared'      => '🏘',
-        'Bedsitter'   => '🏣',
-        _             => '🏠',
-      },
-      gradA: switch (type) {
-        'Apartment'   => const Color(0xFFFDF0EC),
-        'Single Room' => const Color(0xFFF0F4FF),
-        'Shared'      => const Color(0xFFECFDF5),
-        'Bedsitter'   => const Color(0xFFFFF3E0),
-        _             => const Color(0xFFF8F9FF),
-      },
-      gradB: switch (type) {
-        'Apartment'   => const Color(0xFFF4C5B5),
-        'Single Room' => const Color(0xFFDDE6FF),
-        'Shared'      => const Color(0xFFA7F3D0),
-        'Bedsitter'   => const Color(0xFFFFCC80),
-        _             => const Color(0xFFE1E5F7),
-      },
-      typeColor: switch (type) {
-        'Apartment'   => HHColors.brandDark,
-        'Single Room' => HHColors.blue,
-        'Shared'      => HHColors.teal,
-        'Bedsitter'   => HHColors.amber,
-        _             => HHColors.text2,
-      },
-    );
-  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -106,7 +47,7 @@ class HousingHubHome extends StatefulWidget {
 
 class _HousingHubHomeState extends State<HousingHubHome> {
   _Stats  _stats           = const _Stats();
-  List<_PreviewListing> _previews = [];
+  List<HousingListing> _previews = [];
   bool    _loadingStats    = true;
   bool    _loadingPreviews = true;
 
@@ -138,6 +79,8 @@ class _HousingHubHomeState extends State<HousingHubHome> {
 
   // ─────────────────────────────────────────────────────────
   //  GET /api/v1/housing/listings/?page_size=3
+  //  Uses HousingListing.fromJson — same model as the full
+  //  listings screen, so navigation just works.
   // ─────────────────────────────────────────────────────────
   Future<void> _fetchPreviews() async {
     try {
@@ -153,7 +96,7 @@ class _HousingHubHomeState extends State<HousingHubHome> {
         setState(() {
           _previews = raw
               .whereType<Map<String, dynamic>>()
-              .map(_PreviewListing.fromJson)
+              .map(HousingListing.fromJson)
               .toList();
         });
       }
@@ -267,7 +210,6 @@ class _HousingHubHomeState extends State<HousingHubHome> {
                           style: TextStyle(fontSize: 13,
                               color: Colors.white.withOpacity(0.75))),
                         const SizedBox(height: 14),
-                        // Stats strip
                         _loadingStats
                           ? SizedBox(height: 40,
                               child: Center(child: SizedBox(
@@ -276,10 +218,10 @@ class _HousingHubHomeState extends State<HousingHubHome> {
                                   strokeWidth: 2,
                                   color: Colors.white.withOpacity(0.6)))))
                           : Row(children: [
-                              _StatPill('🏠', '${_stats.listings}',    'Listings'),
-                              _StatPill('👫', '${_stats.matches}',     'Matches'),
-                              _StatPill('📍', '${_stats.nearCampus}',  'Near Campus'),
-                              _StatPill('🔔', '${_stats.alerts}',      'Alerts'),
+                              _StatPill('🏠', '${_stats.listings}',   'Listings'),
+                              _StatPill('👫', '${_stats.matches}',    'Matches'),
+                              _StatPill('📍', '${_stats.nearCampus}', 'Near Campus'),
+                              _StatPill('🔔', '${_stats.alerts}',     'Alerts'),
                             ]),
                       ],
                     )),
@@ -408,15 +350,11 @@ class _HousingHubHomeState extends State<HousingHubHome> {
                   final l = _previews[i];
                   return _PreviewCard(
                     listing: l,
+                    // ✅ FIX: pass the full HousingListing object
                     onTap: () => Navigator.push(context,
                       MaterialPageRoute(
                         builder: (_) => HHListingDetailScreen(
-                          listingId: l.id,
-                          title:    l.title,
-                          price:    l.price,
-                          location: l.location,
-                          type:     l.type,
-                          emoji:    l.emoji,
+                          listing: l,
                         ))),
                   );
                 },
@@ -446,8 +384,6 @@ class _HousingHubHomeState extends State<HousingHubHome> {
 // ─────────────────────────────────────────────────────────────
 //  Private widgets
 // ─────────────────────────────────────────────────────────────
-
-/// Single stat pill in the app-bar strip.
 class _StatPill extends StatelessWidget {
   final String emoji, value, label;
   const _StatPill(this.emoji, this.value, this.label);
@@ -503,8 +439,7 @@ class _ModuleCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  Text(emoji,
-                      style: const TextStyle(fontSize: 30)),
+                  Text(emoji, style: const TextStyle(fontSize: 30)),
                   const SizedBox(height: 6),
                   Text(title, style: const TextStyle(
                     fontSize: 13, fontWeight: FontWeight.w900,
@@ -533,7 +468,7 @@ class _ModuleCard extends StatelessWidget {
 }
 
 class _PreviewCard extends StatelessWidget {
-  final _PreviewListing listing;
+  final HousingListing listing;
   final VoidCallback onTap;
   const _PreviewCard({required this.listing, required this.onTap});
 
@@ -568,7 +503,7 @@ class _PreviewCard extends StatelessWidget {
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.9),
                       borderRadius: BorderRadius.circular(8)),
-                    child: Text(listing.type, style: TextStyle(
+                    child: Text(listing.tagLabel, style: TextStyle(
                       fontSize: 10, fontWeight: FontWeight.w800,
                       color: listing.typeColor)))),
                 Positioned(top: 10, right: 10,
@@ -592,20 +527,21 @@ class _PreviewCard extends StatelessWidget {
                     color: HHColors.text)),
                   const SizedBox(height: 4),
                   Row(children: [
-                    Text(listing.price, style: TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.w900,
-                      color: HHColors.brand)),
+                    Text('KES ${listing.rentPerMonth}',
+                      style: TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w900,
+                        color: HHColors.brand)),
                     Text(' /month', style: TextStyle(
                       fontSize: 11, color: HHColors.text3)),
                   ]),
                   const SizedBox(height: 3),
-                  Text(listing.location, style: TextStyle(
+                  Text(listing.locationName, style: TextStyle(
                     fontSize: 11, color: HHColors.text3)),
                   if (listing.tags.isNotEmpty) ...[
                     const SizedBox(height: 8),
                     Wrap(spacing: 5, runSpacing: 5,
                       children: listing.tags.map<Widget>((t) =>
-                        HHTag(t,
+                        HHTag(HousingListing.labelFor(t),
                           bg: HHColors.greenPale,
                           fg: HHColors.teal)
                       ).toList()),
@@ -614,11 +550,18 @@ class _PreviewCard extends StatelessWidget {
                   Divider(color: HHColors.border, height: 1),
                   const SizedBox(height: 10),
                   Row(
-                    mainAxisAlignment:
-                        MainAxisAlignment.spaceBetween,
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text('📅 Available Now', style: TextStyle(
-                        fontSize: 11, color: HHColors.text3)),
+                      Text(
+                        listing.availableFrom != null
+                          ? '📅 ${listing.availableFrom}'
+                          : '📅 Available Now',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: listing.availableFrom != null
+                            ? HHColors.text3 : HHColors.green,
+                          fontWeight: listing.availableFrom == null
+                            ? FontWeight.w700 : FontWeight.normal)),
                       Container(
                         padding: const EdgeInsets.symmetric(
                             horizontal: 14, vertical: 7),

@@ -14,6 +14,8 @@ import '../../../core/api_client.dart';
 //  GET    /api/v1/housing/roommates/my-profile/            → current user's profile
 //  POST   /api/v1/housing/roommates/my-profile/            → create/update preferences
 //  POST   /api/v1/housing/roommates/<uuid>/connect/        → send connect request
+//
+//  Response wrapper: { "success": true, "data": [...] | {...} }
 // ─────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────
@@ -34,16 +36,31 @@ class _Roommate {
     required this.prefs,
   });
 
-  factory _Roommate.fromJson(Map<String, dynamic> j) => _Roommate(
-    id:       j['id']?.toString() ?? '',
-    name:     j['name']?.toString() ?? '',
-    course:   j['course']?.toString() ?? '',
-    year:     j['year']?.toString() ?? '',
-    location: j['preferred_location']?.toString() ?? '',
-    matchPct: (j['match_percent'] as num?)?.toInt() ?? 0,
-    prefs:    (j['lifestyle_prefs'] as List?)
-        ?.map((e) => e.toString()).toList() ?? [],
-  );
+  /// Maps actual API field names returned by the backend:
+  /// { "id", "name", "course", "year", "preferred_location",
+  ///   "lifestyle_prefs", "match_percent", "preferredAreas", ... }
+  factory _Roommate.fromJson(Map<String, dynamic> j) {
+    // preferred_location is the primary key; fall back to first
+    // entry in preferredAreas if missing.
+    String location = j['preferred_location']?.toString() ?? '';
+    if (location.isEmpty) {
+      final areas = j['preferredAreas'];
+      if (areas is List && areas.isNotEmpty) {
+        location = areas.first.toString();
+      }
+    }
+
+    return _Roommate(
+      id:       j['id']?.toString() ?? '',
+      name:     j['name']?.toString() ?? '',
+      course:   j['course']?.toString() ?? '',
+      year:     j['year']?.toString() ?? '',
+      location: location,
+      matchPct: (j['match_percent'] as num?)?.toInt() ?? 0,
+      prefs:    (j['lifestyle_prefs'] as List?)
+          ?.map((e) => e.toString()).toList() ?? [],
+    );
+  }
 
   // Derived display values — no hardcoded data
   String get emoji {
@@ -72,6 +89,29 @@ class _Roommate {
     ];
     return options[seed.abs() % options.length];
   }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Unwrap helper — handles all backend response shapes:
+//    { "success": true, "data": [...] }   ← current backend
+//    { "results": [...] }                 ← DRF pagination
+//    [...]                                ← bare list
+// ─────────────────────────────────────────────────────────────
+List<dynamic> _unwrapList(dynamic decoded) {
+  if (decoded is List) return decoded;
+  if (decoded is Map) {
+    if (decoded['data'] is List)    return decoded['data'] as List;
+    if (decoded['results'] is List) return decoded['results'] as List;
+  }
+  return [];
+}
+
+Map<String, dynamic>? _unwrapObject(dynamic decoded) {
+  if (decoded is Map && decoded['data'] is Map) {
+    return decoded['data'] as Map<String, dynamic>;
+  }
+  if (decoded is Map<String, dynamic>) return decoded;
+  return null;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -107,6 +147,7 @@ class _HHRoommateScreenState extends State<HHRoommateScreen> {
 
   // ─────────────────────────────────────────────────────────
   //  GET /api/v1/housing/roommates/
+  //  Response: { "success": true, "data": [ ...profiles ] }
   // ─────────────────────────────────────────────────────────
   Future<void> _load() async {
     if (mounted) setState(() { _loading = true; _error = null; });
@@ -121,16 +162,20 @@ class _HHRoommateScreenState extends State<HHRoommateScreen> {
       final res = await ApiClient.get('/api/v1/housing/roommates/$qs');
       dev.log('[Roommates] GET /housing/roommates/$qs → ${res.statusCode}');
       if (!mounted) return;
+
       if (res.statusCode == 200) {
         final decoded = jsonDecode(res.body);
-        final raw = decoded is List
-            ? decoded
-            : (decoded['results'] as List?) ?? [];
+        final raw = _unwrapList(decoded);
+
         setState(() {
-          _roommates = raw.whereType<Map<String, dynamic>>()
-              .map(_Roommate.fromJson).toList();
+          _roommates = raw
+              .whereType<Map<String, dynamic>>()
+              .map(_Roommate.fromJson)
+              .toList();
           _loading = false;
         });
+
+        dev.log('[Roommates] loaded ${_roommates.length} profiles');
       } else {
         setState(() {
           _error   = 'Could not load profiles (${res.statusCode}).';
@@ -179,7 +224,6 @@ class _HHRoommateScreenState extends State<HHRoommateScreen> {
         color: HHColors.teal,
         onRefresh: _load,
         child: CustomScrollView(slivers: [
-          // ── Inline search bar (replaces HHSearchBar which lacks onChanged) ──
           SliverToBoxAdapter(
             child: _HHInlineSearchBar(
               hint: 'Search by name, course, area…',
@@ -230,17 +274,16 @@ class _HHRoommateScreenState extends State<HHRoommateScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Text(_error!, textAlign: TextAlign.center,
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontSize: 13, color: HHColors.text3)),
                   const SizedBox(height: 12),
                   TextButton.icon(
                     onPressed: _load,
-                    icon: const Icon(Icons.refresh_rounded,
-                      size: 16),
+                    icon: const Icon(Icons.refresh_rounded, size: 16),
                     label: const Text('Retry')),
                 ])))
           else if (_roommates.isEmpty)
-            SliverFillRemaining(
+            const SliverFillRemaining(
               child: Center(child: Text('No matches found.',
                 style: TextStyle(
                   fontSize: 13, color: HHColors.text3))))
@@ -256,10 +299,9 @@ class _HHRoommateScreenState extends State<HHRoommateScreen> {
                     roommate: r,
                     onTap: () => Navigator.push(context,
                       MaterialPageRoute(
-                        builder: (_) =>
-                          HHRoommateDetailScreen(
-                            roommateId: r.id,
-                            snapshot:   r))),
+                        builder: (_) => HHRoommateDetailScreen(
+                          roommateId: r.id,
+                          snapshot:   r))),
                   );
                 },
                 childCount: _roommates.length + 1,
@@ -308,6 +350,7 @@ class _HHRoommateDetailScreenState
 
   // ─────────────────────────────────────────────────────────
   //  GET /api/v1/housing/roommates/<uuid>/
+  //  Response: { "success": true, "data": { ...profile } }
   // ─────────────────────────────────────────────────────────
   Future<void> _fetchDetail() async {
     try {
@@ -315,15 +358,20 @@ class _HHRoommateDetailScreenState
           '/api/v1/housing/roommates/${widget.roommateId}/');
       dev.log('[RoommateDetail] GET → ${res.statusCode}');
       if (!mounted) return;
+
       if (res.statusCode == 200) {
-        final decoded =
-            jsonDecode(res.body) as Map<String, dynamic>?;
-        if (decoded != null) {
+        final decoded = jsonDecode(res.body);
+        // Unwrap { "success": true, "data": { ... } } if present
+        final profile = _unwrapObject(decoded);
+
+        if (profile != null) {
           setState(() {
-            _roommate = _Roommate.fromJson(decoded);
-            _detail   = decoded;
+            _roommate = _Roommate.fromJson(profile);
+            _detail   = profile;
             _loading  = false;
           });
+        } else {
+          setState(() => _loading = false);
         }
       } else if (_roommate == null) {
         setState(() {
@@ -405,7 +453,7 @@ class _HHRoommateDetailScreenState
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Text(_error!, textAlign: TextAlign.center,
-              style: TextStyle(color: HHColors.text3)),
+              style: const TextStyle(color: HHColors.text3)),
             const SizedBox(height: 12),
             TextButton.icon(
               onPressed: _fetchDetail,
@@ -442,6 +490,7 @@ class _HHRoommateDetailScreenState
       body: SingleChildScrollView(
         child: Column(crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // ── Hero card ──
             Container(
               margin: const EdgeInsets.all(16),
               padding: const EdgeInsets.all(16),
@@ -458,12 +507,12 @@ class _HHRoommateDetailScreenState
                 Expanded(child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(r.name, style: TextStyle(
+                    Text(r.name, style: const TextStyle(
                       fontSize: 16, fontWeight: FontWeight.w900,
                       color: HHColors.text)),
-                    Text(r.course, style: TextStyle(
+                    Text(r.course, style: const TextStyle(
                       fontSize: 13, color: HHColors.text2)),
-                    Text(r.year, style: TextStyle(
+                    Text(r.year, style: const TextStyle(
                       fontSize: 12, color: HHColors.text3)),
                   ])),
                 Container(
@@ -473,7 +522,7 @@ class _HHRoommateDetailScreenState
                     color: HHColors.tealPale,
                     borderRadius: BorderRadius.circular(10)),
                   child: Text('${r.matchPct}% Match',
-                    style: TextStyle(fontSize: 13,
+                    style: const TextStyle(fontSize: 13,
                       fontWeight: FontWeight.w900,
                       color: HHColors.teal))),
               ])),
@@ -513,7 +562,7 @@ class _HHRoommateDetailScreenState
               child: Row(children: [
                 Expanded(child: OutlinedButton(
                   style: OutlinedButton.styleFrom(
-                    side: BorderSide(color: HHColors.brand),
+                    side: const BorderSide(color: HHColors.brand),
                     foregroundColor: HHColors.brand,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12)),
@@ -579,6 +628,7 @@ class _HHRoommatePrefsScreenState
 
   // ─────────────────────────────────────────────────────────
   //  GET /api/v1/housing/roommates/my-profile/
+  //  Response: { "success": true, "data": { ...profile } }
   // ─────────────────────────────────────────────────────────
   Future<void> _fetchMyProfile() async {
     if (mounted) setState(() => _loading = true);
@@ -587,20 +637,30 @@ class _HHRoommatePrefsScreenState
           '/api/v1/housing/roommates/my-profile/');
       dev.log('[RoommatePrefs] GET my-profile → ${res.statusCode}');
       if (!mounted) return;
+
       if (res.statusCode == 200) {
-        final j =
-            jsonDecode(res.body) as Map<String, dynamic>?;
+        final decoded = jsonDecode(res.body);
+        // Unwrap { "success": true, "data": { ... } } if present
+        final j = _unwrapObject(decoded);
+
         if (j != null) {
           setState(() {
             _sleep   = j['sleep_schedule']?.toString()
-                ?? _sleep;
+                ?? j['sleepSchedule']?.toString() ?? _sleep;
             _clean   = j['cleanliness']?.toString() ?? _clean;
-            _noise   = j['noise_level']?.toString() ?? _noise;
-            _noSmoke = j['no_smoking'] as bool? ?? _noSmoke;
-            _petsOk  = j['pets_ok'] as bool? ?? _petsOk;
+            _noise   = j['noise_level']?.toString()
+                ?? j['noiseLevel']?.toString() ?? _noise;
+            _noSmoke = j['no_smoking'] as bool?
+                ?? j['smoking'] as bool? ?? _noSmoke;
+            _petsOk  = j['pets_ok'] as bool?
+                ?? j['pets'] as bool? ?? _petsOk;
             _budget  = (j['budget_max'] as num?)?.toInt()
-                ?? _budget;
+                ?? (j['budgetMax'] as num?)?.toInt() ?? _budget;
+
+            // preferred_locations OR preferredAreas
             final locs = (j['preferred_locations'] as List?)
+                ?.map((e) => e.toString()).toSet()
+              ?? (j['preferredAreas'] as List?)
                 ?.map((e) => e.toString()).toSet();
             if (locs != null) {
               _selLocs
@@ -625,13 +685,13 @@ class _HHRoommatePrefsScreenState
     setState(() => _saving = true);
     try {
       final payload = {
-        'sleep_schedule':       _sleep,
-        'cleanliness':          _clean,
-        'noise_level':          _noise,
-        'no_smoking':           _noSmoke,
-        'pets_ok':              _petsOk,
-        'budget_max':           _budget,
-        'preferred_locations':  _selLocs.toList(),
+        'sleep_schedule':      _sleep,
+        'cleanliness':         _clean,
+        'noise_level':         _noise,
+        'no_smoking':          _noSmoke,
+        'pets_ok':             _petsOk,
+        'budget_max':          _budget,
+        'preferred_locations': _selLocs.toList(),
       };
       final res = await ApiClient.post(
           '/api/v1/housing/roommates/my-profile/',
@@ -693,8 +753,7 @@ class _HHRoommatePrefsScreenState
               children: [
                 HHSectionLabel(title: 'Budget Range'),
                 Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16),
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Row(children: [
                     Expanded(child: Container(
                       padding: const EdgeInsets.all(10),
@@ -702,7 +761,7 @@ class _HHRoommatePrefsScreenState
                         color: HHColors.surface,
                         border: Border.all(color: HHColors.border),
                         borderRadius: BorderRadius.circular(10)),
-                      child: Column(children: [
+                      child: const Column(children: [
                         Text('Min', style: TextStyle(
                           fontSize: 10, color: HHColors.text3)),
                         Text('KES 5,000', style: TextStyle(
@@ -718,17 +777,16 @@ class _HHRoommatePrefsScreenState
                         border: Border.all(color: HHColors.border),
                         borderRadius: BorderRadius.circular(10)),
                       child: Column(children: [
-                        Text('Max', style: TextStyle(
+                        const Text('Max', style: TextStyle(
                           fontSize: 10, color: HHColors.text3)),
                         Text('KES $_budget',
-                          style: TextStyle(fontSize: 14,
+                          style: const TextStyle(fontSize: 14,
                             fontWeight: FontWeight.w800,
                             color: HHColors.brand)),
                       ]))),
                   ])),
                 Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16),
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Slider(
                     value: _budget.toDouble(),
                     min: 5000, max: 30000,
@@ -740,8 +798,7 @@ class _HHRoommatePrefsScreenState
                 SizedBox(height: 50,
                   child: ListView.separated(
                     scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16),
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
                     itemCount: _locs.length,
                     separatorBuilder: (_, __) =>
                         const SizedBox(width: 7),
@@ -761,44 +818,38 @@ class _HHRoommatePrefsScreenState
 
                 HHSectionLabel(title: 'Lifestyle Preferences'),
                 Container(
-                  margin: const EdgeInsets.symmetric(
-                    horizontal: 16),
+                  margin: const EdgeInsets.symmetric(horizontal: 16),
                   decoration: HHTheme.card,
                   child: Column(children: [
                     _PrefRow(
                       label: '🌙 Sleep Schedule',
                       options: ['Early bird', 'Night owl'],
                       value: _sleep,
-                      onChanged: (v) =>
-                          setState(() => _sleep = v)),
+                      onChanged: (v) => setState(() => _sleep = v)),
                     Divider(color: HHColors.border, height: 1),
                     _PrefRow(
                       label: '🧹 Cleanliness',
                       options: ['Relaxed', 'Very tidy'],
                       value: _clean,
-                      onChanged: (v) =>
-                          setState(() => _clean = v)),
+                      onChanged: (v) => setState(() => _clean = v)),
                     Divider(color: HHColors.border, height: 1),
                     _PrefRow(
                       label: '🎵 Noise Level',
                       options: ['Quiet', 'Moderate', 'Social'],
                       value: _noise,
-                      onChanged: (v) =>
-                          setState(() => _noise = v)),
+                      onChanged: (v) => setState(() => _noise = v)),
                     Divider(color: HHColors.border, height: 1),
                     HHToggleRow(
                       label: '🚬 Non-smoker preferred',
                       subtitle: 'Only match with non-smokers',
                       value: _noSmoke,
-                      onChanged: (v) =>
-                          setState(() => _noSmoke = v)),
+                      onChanged: (v) => setState(() => _noSmoke = v)),
                     Divider(color: HHColors.border, height: 1),
                     HHToggleRow(
                       label: '🐾 Pets okay',
                       subtitle: 'Open to roommates with pets',
                       value: _petsOk,
-                      onChanged: (v) =>
-                          setState(() => _petsOk = v)),
+                      onChanged: (v) => setState(() => _petsOk = v)),
                   ])),
 
                 HHPrimaryButton(
@@ -816,8 +867,6 @@ class _HHRoommatePrefsScreenState
 //  Private helpers
 // ─────────────────────────────────────────────────────────────
 
-/// Inline search bar used in place of HHSearchBar when live
-/// text input (onChanged) is required. Does NOT touch hh_widgets.dart.
 class _HHInlineSearchBar extends StatelessWidget {
   final String hint;
   final ValueChanged<String> onChanged;
@@ -850,7 +899,7 @@ class _HHInlineSearchBar extends StatelessWidget {
             onChanged: onChanged,
             decoration: InputDecoration(
               hintText: hint,
-              hintStyle: TextStyle(
+              hintStyle: const TextStyle(
                 fontSize: 13, color: HHColors.text3),
               contentPadding: const EdgeInsets.symmetric(
                 horizontal: 10, vertical: 11),
@@ -864,7 +913,7 @@ class _HHInlineSearchBar extends StatelessWidget {
           decoration: BoxDecoration(
             color: HHColors.brandPale,
             borderRadius: BorderRadius.circular(8)),
-          child: Text('Filter', style: TextStyle(
+          child: const Text('Filter', style: TextStyle(
             fontSize: 11, fontWeight: FontWeight.w800,
             color: HHColors.brand)),
         ),
@@ -900,10 +949,9 @@ class _RoommateCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
-                mainAxisAlignment:
-                  MainAxisAlignment.spaceBetween,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(roommate.name, style: TextStyle(
+                  Text(roommate.name, style: const TextStyle(
                     fontSize: 14, fontWeight: FontWeight.w800,
                     color: HHColors.text)),
                   Container(
@@ -913,14 +961,14 @@ class _RoommateCard extends StatelessWidget {
                       color: HHColors.tealPale,
                       borderRadius: BorderRadius.circular(8)),
                     child: Text('${roommate.matchPct}%',
-                      style: TextStyle(fontSize: 12,
+                      style: const TextStyle(fontSize: 12,
                         fontWeight: FontWeight.w900,
                         color: HHColors.teal))),
                 ]),
               const SizedBox(height: 2),
-              Text(roommate.course, style: TextStyle(
+              Text(roommate.course, style: const TextStyle(
                 fontSize: 12, color: HHColors.text2)),
-              Text('📍 ${roommate.location}', style: TextStyle(
+              Text('📍 ${roommate.location}', style: const TextStyle(
                 fontSize: 11, color: HHColors.text3)),
               if (roommate.prefs.isNotEmpty) ...[
                 const SizedBox(height: 6),
@@ -952,12 +1000,11 @@ class _PrefRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(
-        horizontal: 14, vertical: 11),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: TextStyle(
+          Text(label, style: const TextStyle(
             fontSize: 13, fontWeight: FontWeight.w600,
             color: HHColors.text)),
           Wrap(spacing: 5,
