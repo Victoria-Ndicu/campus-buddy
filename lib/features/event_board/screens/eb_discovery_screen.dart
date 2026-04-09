@@ -898,31 +898,59 @@ class _EBEventDetailScreenState extends State<EBEventDetailScreen> {
 Future<void> _toggleRsvp() async {
     if (_event == null || _isPast) return;
     final wasGoing = _event!.isRsvped;
+    
+    // Determine the new status based on current state
+    final newStatus = wasGoing ? 'not_going' : 'going';  // 👈 Always lowercase
+    
+    dev.log('[Detail] Toggling RSVP: $wasGoing -> $newStatus');
+    
+    // Optimistic update
     setState(() => _event = _event!.copyWith(
       isRsvped: !wasGoing,
       attendingCount: _event!.attendingCount + (wasGoing ? -1 : 1)));
 
     try {
-      final res = wasGoing
-          ? await ApiClient.delete('/api/v1/events/${widget.eventId}/rsvp/')
-          : await ApiClient.post(
-              '/api/v1/events/${widget.eventId}/rsvp/',
-              data: {'status': 'going'},  // 👈 Add this!
-            );
+      // IMPORTANT: Use POST for BOTH actions (DELETE is NOT supported)
+      final res = await ApiClient.post(
+        '/api/v1/events/${widget.eventId}/rsvp/',
+        body: {'status': newStatus},  // 👈 Must be "going" or "not_going"
+      );
 
-      dev.log('[Detail] RSVP → ${res.statusCode}');
+      dev.log('[Detail] RSVP Response: ${res.statusCode}');
+      dev.log('[Detail] Response body: ${res.body}');
 
-      final ok = res.statusCode == 200 || res.statusCode == 201 || res.statusCode == 204;
+      final ok = res.statusCode == 200 || res.statusCode == 201;
+      
       if (!ok) {
+        // Parse the error to show user
+        String errorMsg = 'Could not update RSVP.';
+        if (res.statusCode == 400) {
+          try {
+            final errorBody = jsonDecode(res.body);
+            errorMsg = errorBody['detail'] ?? errorBody['message'] ?? 'Invalid RSVP status';
+          } catch (_) {}
+        }
+        
+        // Rollback optimistic update
         setState(() => _event = _event!.copyWith(
           isRsvped: wasGoing,
           attendingCount: _event!.attendingCount + (wasGoing ? 1 : -1)));
-        if (mounted) _snack('Could not update RSVP.');
+        if (mounted) _snack(errorMsg);
       } else {
-        if (mounted) _snack(!wasGoing ? "✅ You're going!" : 'RSVP cancelled',
-          bg: _event?.rsvpColor);
+        // Parse success message
+        String successMsg = !wasGoing ? "✅ You're going!" : 'RSVP cancelled';
+        try {
+          final responseBody = jsonDecode(res.body);
+          if (responseBody['message'] != null) {
+            successMsg = responseBody['message'];
+          }
+        } catch (_) {}
+        
+        if (mounted) _snack(successMsg, bg: _event?.rsvpColor);
       }
-    } catch (_) {
+    } catch (e) {
+      dev.log('[Detail] Network error: $e');
+      // Rollback optimistic update
       setState(() => _event = _event!.copyWith(
         isRsvped: wasGoing,
         attendingCount: _event!.attendingCount + (wasGoing ? 1 : -1)));
