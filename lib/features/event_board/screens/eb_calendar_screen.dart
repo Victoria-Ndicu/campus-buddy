@@ -1,63 +1,105 @@
 import 'dart:convert';
 import 'dart:developer' as dev;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import '../models/eb_constants.dart';
 import '../widgets/eb_widgets.dart';
 import '../../../core/api_client.dart';
 
 // ─────────────────────────────────────────────────────────────
-//  API ENDPOINTS (all under /api/v1/events/)
+//  API ENDPOINTS
 //
-//  GET    /api/v1/events/                  → list events (with ?date= filter)
-//  GET    /api/v1/events/<uuid>/           → event detail
-//  POST   /api/v1/events/<uuid>/rsvp/      → RSVP
-//  DELETE /api/v1/events/<uuid>/rsvp/      → cancel RSVP
-//  GET    /api/v1/events/reminders/        → list reminders
-//  POST   /api/v1/events/reminders/        → create reminder
-//  DELETE /api/v1/events/reminders/        → delete reminder (via body {eventId})
-//  POST   /api/v1/events/<uuid>/save/      → save event
-//  DELETE /api/v1/events/<uuid>/save/      → unsave event
+//  GET  /api/v1/events/?month=YYYY-MM          → dot indicators
+//  GET  /api/v1/events/?date=YYYY-MM-DD        → events for a day
+//  GET  /api/v1/events/?from_date=YYYY-MM-DD&to_date=YYYY-MM-DD → range
+//  POST /api/v1/events/<uuid>/rsvp/            → { status: "going"|"not_going" }
+//  POST /api/v1/events/reminders/              → { event_id, remind_at }
+//  DELETE /api/v1/events/reminders/            → { event_id }
+//  POST /api/v1/events/<uuid>/save/            → toggle saved
+//  DELETE /api/v1/events/<uuid>/save/          → toggle saved
 // ─────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────
-//  SHARED MODELS
+//  FILTER TAG ENUM
+// ─────────────────────────────────────────────────────────────
+enum _CalFilter { none, thisWeek, thisMonth, thisWeekend }
+
+extension _CalFilterLabel on _CalFilter {
+  String get label {
+    switch (this) {
+      case _CalFilter.thisWeek:    return 'This Week';
+      case _CalFilter.thisMonth:   return 'This Month';
+      case _CalFilter.thisWeekend: return 'This Weekend';
+      case _CalFilter.none:        return '';
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  HELPERS
+// ─────────────────────────────────────────────────────────────
+String _fmt12h(DateTime dt) {
+  final h  = dt.hour > 12 ? dt.hour - 12 : (dt.hour == 0 ? 12 : dt.hour);
+  final m  = dt.minute.toString().padLeft(2, '0');
+  final ap = dt.hour >= 12 ? 'PM' : 'AM';
+  return '$h:$m $ap';
+}
+
+String _fmtDateDisplay(DateTime dt) {
+  const months = [
+    'Jan','Feb','Mar','Apr','May','Jun',
+    'Jul','Aug','Sep','Oct','Nov','Dec',
+  ];
+  return '${months[dt.month - 1]} ${dt.day}  ·  ${_fmt12h(dt)}';
+}
+
+String _toIsoDate(DateTime dt) {
+  final y  = dt.year.toString().padLeft(4, '0');
+  final m  = dt.month.toString().padLeft(2, '0');
+  final d  = dt.day.toString().padLeft(2, '0');
+  return '$y-$m-$d';
+}
+
+// ─────────────────────────────────────────────────────────────
+//  MODEL
 // ─────────────────────────────────────────────────────────────
 class _CalEvent {
-  final String id;
-  final String name;
-  final String time;       // e.g. "2:00 PM"
-  final String date;       // e.g. "Feb 18 · 2:00 PM"
-  final String meta;       // location + organiser
-  final String category;
-  final Color  catColor;
-  final Color  stripe;
-  final int    day;        // day-of-month number
-  final String dayLabel;   // e.g. "TUE"
-  final int    attendingCount;
-  final bool   isRsvped;
-  final bool   isSaved;
-  final bool   hasReminder;
+  final String   id;
+  final String   name;
+  final String   time;
+  final String   date;
+  final String   meta;
+  final String   category;
+  final Color    catColor;
+  final DateTime? startDt;   // parsed DateTime for accurate grouping
+  final int      attendingCount;
+  final bool     isRsvped;
+  final bool     isSaved;
+  final bool     hasReminder;
 
   const _CalEvent({
     required this.id,
     required this.name,
-    this.time          = '',
-    this.date          = '',
-    this.meta          = '',
-    this.category      = '',
-    this.catColor      = EBColors.brand,
-    this.stripe        = EBColors.brand,
-    this.day           = 0,
-    this.dayLabel      = '',
+    this.time           = '',
+    this.date           = '',
+    this.meta           = '',
+    this.category       = '',
+    this.catColor       = EBColors.brand,
+    this.startDt,
     this.attendingCount = 0,
-    this.isRsvped      = false,
-    this.isSaved       = false,
-    this.hasReminder   = false,
+    this.isRsvped       = false,
+    this.isSaved        = false,
+    this.hasReminder    = false,
   });
 
-  _CalEvent copyWith({bool? isRsvped, bool? isSaved, bool? hasReminder,
-      int? attendingCount}) => _CalEvent(
+  /// Day-of-month for the calendar grid (local time)
+  int get day => startDt?.day ?? 0;
+
+  _CalEvent copyWith({
+    bool? isRsvped,
+    bool? isSaved,
+    bool? hasReminder,
+    int?  attendingCount,
+  }) => _CalEvent(
     id:             id,
     name:           name,
     time:           time,
@@ -65,169 +107,145 @@ class _CalEvent {
     meta:           meta,
     category:       category,
     catColor:       catColor,
-    stripe:         stripe,
-    day:            day,
-    dayLabel:       dayLabel,
+    startDt:        startDt,
     attendingCount: attendingCount ?? this.attendingCount,
-    isRsvped:       isRsvped      ?? this.isRsvped,
-    isSaved:        isSaved       ?? this.isSaved,
-    hasReminder:    hasReminder   ?? this.hasReminder,
+    isRsvped:       isRsvped       ?? this.isRsvped,
+    isSaved:        isSaved        ?? this.isSaved,
+    hasReminder:    hasReminder    ?? this.hasReminder,
   );
 
-  Color get _catCol {
-    final c = category.toLowerCase();
+  static Color _colorFor(String cat) {
+    final c = cat.toLowerCase();
     if (c.contains('academic') || c.contains('tech')) return EBColors.blue;
     if (c.contains('sport'))                          return EBColors.green;
-    if (c.contains('cultural') || c.contains('arts'))return EBColors.pink;
     if (c.contains('career'))                         return EBColors.amber;
+    if (c.contains('cultural') || c.contains('arts')) return EBColors.pink;
     return EBColors.brand;
   }
 
   factory _CalEvent.fromJson(Map<String, dynamic> raw) {
-    final j = (raw['event'] is Map<String, dynamic>
-        ? raw['event'] : raw) as Map<String, dynamic>;
+    // Unwrap nested event if present
+    final Map<String, dynamic> j =
+        (raw['data'] is Map<String, dynamic>
+            ? raw['data'] as Map<String, dynamic>
+            : raw['event'] is Map<String, dynamic>
+                ? raw['event'] as Map<String, dynamic>
+                : raw);
 
     String str(String k) => j[k]?.toString() ?? '';
-    bool   boo(String k) {
+
+    bool boo(String k) {
       final v = j[k];
-      if (v is bool) return v;
-      if (v is int)  return v != 0;
+      if (v is bool)   return v;
+      if (v is int)    return v != 0;
       if (v is String) return v.toLowerCase() == 'true';
       return false;
     }
-    int    num_(String k) => (j[k] as num?)?.toInt() ?? 0;
 
-    // Parse day-of-month from date string (fallback 0)
-    int parsedDay = 0;
-    final dateStr = str('date');
-    final match = RegExp(r'\b(\d{1,2})\b').firstMatch(dateStr);
-    if (match != null) parsedDay = int.tryParse(match.group(1)!) ?? 0;
+    int num_(String k) => (j[k] as num?)?.toInt() ?? 0;
 
-    // Day label from date (Mon, Tue … or from server)
-    String parsedLabel = str('dayLabel');
+    // ── Parse startAt (camelCase or snake_case) ──────────
+    final startAtRaw = str('startAt').isNotEmpty
+        ? str('startAt')
+        : str('start_at');
+
+    DateTime? dt;
+    try {
+      if (startAtRaw.isNotEmpty) dt = DateTime.parse(startAtRaw).toLocal();
+    } catch (_) {}
+
+    final parsedTime = dt != null ? _fmt12h(dt)         : str('time');
+    final parsedDate = dt != null ? _fmtDateDisplay(dt) : str('date');
+
+    // ── RSVP ─────────────────────────────────────────────
+    final userRsvp = str('userRsvp');
+    final isRsvped = userRsvp == 'going' || userRsvp == 'waitlist' || boo('isRsvped');
+
+    // ── Attending count ───────────────────────────────────
+    final attending = num_('rsvpCount') != 0
+        ? num_('rsvpCount')
+        : num_('rsvp_count') != 0
+            ? num_('rsvp_count')
+            : num_('attendingCount');
 
     final catStr = str('category');
-    Color catCol = EBColors.brand;
-    {
-      final c = catStr.toLowerCase();
-      if (c.contains('academic') || c.contains('tech')) catCol = EBColors.blue;
-      else if (c.contains('sport'))                     catCol = EBColors.green;
-      else if (c.contains('cultural') || c.contains('arts')) catCol = EBColors.pink;
-      else if (c.contains('career'))                    catCol = EBColors.amber;
-    }
 
     return _CalEvent(
       id:             str('id'),
-      name:           str('title').isEmpty ? str('name') : str('title'),
-      time:           str('time'),
-      date:           dateStr,
-      meta:           str('meta').isEmpty ? str('location') : str('meta'),
+      name:           str('title').isNotEmpty ? str('title') : str('name'),
+      time:           parsedTime,
+      date:           parsedDate,
+      meta:           str('location').isNotEmpty ? str('location') : str('meta'),
       category:       catStr,
-      catColor:       catCol,
-      stripe:         catCol,
-      day:            num_('day').isNaN ? parsedDay : num_('day') == 0 ? parsedDay : num_('day'),
-      dayLabel:       parsedLabel,
-      attendingCount: num_('attendingCount'),
-      isRsvped:       boo('isRsvped'),
+      catColor:       _CalEvent._colorFor(catStr),
+      startDt:        dt,
+      attendingCount: attending,
+      isRsvped:       isRsvped,
       isSaved:        boo('isSaved'),
       hasReminder:    boo('hasReminder'),
     );
   }
 }
 
-class _Reminder {
-  final String id;
-  final String eventId;
-  final String eventName;
-  final String reminderTime;
-  final String meta;
-
-  const _Reminder({
-    required this.id,
-    required this.eventId,
-    required this.eventName,
-    this.reminderTime = '',
-    this.meta         = '',
-  });
-
-  factory _Reminder.fromJson(Map<String, dynamic> j) => _Reminder(
-    id:           j['id']?.toString()           ?? '',
-    eventId:      j['eventId']?.toString()      ?? '',
-    eventName:    j['eventName']?.toString()    ?? '',
-    reminderTime: j['reminderTime']?.toString() ?? '',
-    meta:         j['meta']?.toString()         ?? '',
-  );
-}
-
 // ─────────────────────────────────────────────────────────────
-//  SHARED API HELPERS  (mixin used by all three screens)
+//  API ACTIONS MIXIN
 // ─────────────────────────────────────────────────────────────
 mixin _EventActions<T extends StatefulWidget> on State<T> {
-  // ── RSVP toggle ──────────────────────────────────────────
-  // POST   /api/v1/events/<uuid>/rsvp/
-  // DELETE /api/v1/events/<uuid>/rsvp/
-  Future<bool> apiToggleRsvp(String eventId, {required bool wasGoing}) async {
-    try {
-      final res = wasGoing
-          ? await ApiClient.delete('/api/v1/events/$eventId/rsvp/')
-          : await ApiClient.post  ('/api/v1/events/$eventId/rsvp/');
-      dev.log('[EventActions] RSVP $eventId → ${res.statusCode}');
-      return res.statusCode == 200 ||
-             res.statusCode == 201 ||
-             res.statusCode == 204;
-    } catch (e) {
-      dev.log('[EventActions] RSVP error: $e');
-      return false;
-    }
-  }
 
-  // ── Save toggle ───────────────────────────────────────────
-  // POST   /api/v1/events/<uuid>/save/
-  // DELETE /api/v1/events/<uuid>/save/
-  Future<bool> apiToggleSave(String eventId, {required bool wasSaved}) async {
+  Future<bool> apiToggleRsvp(String id, {required bool wasGoing}) async {
     try {
-      final res = wasSaved
-          ? await ApiClient.delete('/api/v1/events/$eventId/save/')
-          : await ApiClient.post  ('/api/v1/events/$eventId/save/');
-      dev.log('[EventActions] Save $eventId → ${res.statusCode}');
-      return res.statusCode == 200 ||
-             res.statusCode == 201 ||
-             res.statusCode == 204;
-    } catch (e) {
-      dev.log('[EventActions] Save error: $e');
-      return false;
-    }
-  }
-
-  // ── Add reminder ──────────────────────────────────────────
-  // POST /api/v1/events/reminders/
-  Future<bool> apiAddReminder(String eventId,
-      {String reminderTime = '24h'}) async {
-    try {
-      final res = await ApiClient.post('/api/v1/events/reminders/', body: {
-        'eventId':      eventId,
-        'reminderTime': reminderTime,
-      });
-      dev.log('[EventActions] AddReminder $eventId → ${res.statusCode}');
+      final res = await ApiClient.post(
+        '/api/v1/events/$id/rsvp/',
+        body: {'status': wasGoing ? 'not_going' : 'going'},
+      );
+      dev.log('[Cal] RSVP $id → ${res.statusCode}');
       return res.statusCode == 200 || res.statusCode == 201;
     } catch (e) {
-      dev.log('[EventActions] Reminder error: $e');
+      dev.log('[Cal] RSVP error: $e');
       return false;
     }
   }
 
-  // ── Delete reminder ───────────────────────────────────────
-  // DELETE /api/v1/events/reminders/  {eventId}
-  Future<bool> apiDeleteReminder(String eventId) async {
+  Future<bool> apiToggleSave(String id, {required bool wasSaved}) async {
     try {
-      final res = await ApiClient.delete('/api/v1/events/reminders/',
-          body: {'eventId': eventId});
-      dev.log('[EventActions] DelReminder $eventId → ${res.statusCode}');
-      return res.statusCode == 200 ||
-             res.statusCode == 204 ||
-             res.statusCode == 201;
+      final res = wasSaved
+          ? await ApiClient.delete('/api/v1/events/$id/save/')
+          : await ApiClient.post  ('/api/v1/events/$id/save/');
+      dev.log('[Cal] Save $id → ${res.statusCode}');
+      return res.statusCode == 200 || res.statusCode == 201 || res.statusCode == 204;
     } catch (e) {
-      dev.log('[EventActions] DelReminder error: $e');
+      dev.log('[Cal] Save error: $e');
+      return false;
+    }
+  }
+
+  Future<bool> apiAddReminder(String id, {DateTime? remindAt}) async {
+    try {
+      final at = (remindAt ?? DateTime.now().add(const Duration(hours: 24)))
+          .toUtc()
+          .toIso8601String();
+      final res = await ApiClient.post(
+        '/api/v1/events/reminders/',
+        body: {'event_id': id, 'remind_at': at},
+      );
+      dev.log('[Cal] AddReminder $id → ${res.statusCode}');
+      return res.statusCode == 200 || res.statusCode == 201;
+    } catch (e) {
+      dev.log('[Cal] AddReminder error: $e');
+      return false;
+    }
+  }
+
+  Future<bool> apiDeleteReminder(String id) async {
+    try {
+      final res = await ApiClient.delete(
+        '/api/v1/events/reminders/',
+        body: {'event_id': id},
+      );
+      dev.log('[Cal] DelReminder $id → ${res.statusCode}');
+      return res.statusCode == 200 || res.statusCode == 201 || res.statusCode == 204;
+    } catch (e) {
+      dev.log('[Cal] DelReminder error: $e');
       return false;
     }
   }
@@ -237,22 +255,20 @@ mixin _EventActions<T extends StatefulWidget> on State<T> {
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(SnackBar(
-        content: Text(msg),
+        content:         Text(msg),
         backgroundColor: bg ?? EBColors.brand,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12)),
+        behavior:        SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ));
   }
 }
 
 // ═════════════════════════════════════════════════════════════
-//  SCREEN 1 — CALENDAR
-//  GET /api/v1/events/?date=YYYY-MM-DD  → events for selected day
-//  + RSVP / Save / Reminder actions via mixin
+//  CALENDAR SCREEN
 // ═════════════════════════════════════════════════════════════
 class EBCalendarScreen extends StatefulWidget {
   const EBCalendarScreen({super.key});
+
   @override
   State<EBCalendarScreen> createState() => _EBCalendarScreenState();
 }
@@ -260,159 +276,420 @@ class EBCalendarScreen extends StatefulWidget {
 class _EBCalendarScreenState extends State<EBCalendarScreen>
     with _EventActions<EBCalendarScreen> {
 
-  // ── Calendar state ────────────────────────────────────────
-  int _selectedDay = 18;
-  static const _today = 17;
+  late DateTime _displayMonth;
+  late DateTime _today;
+  late DateTime _selectedDate; // full DateTime for precise matching
 
-  // Days that have events — populated from API response
+  // Map of "YYYY-MM-DD" → list of events (cache per day)
+  final Map<String, List<_CalEvent>> _eventCache = {};
+
+  // Days in the current display month that have events
   Set<int> _eventDays = {};
 
-  // Events for the currently selected day
   List<_CalEvent> _dayEvents  = [];
   bool            _loadingDay = false;
   String?         _dayError;
 
-  // Week strip days
-  static const _weekDays   = [18, 19, 20, 21, 22];
-  static const _weekLabels = ['TUE', 'WED', 'THU', 'FRI', 'SAT'];
+  _CalFilter _activeFilter = _CalFilter.none;
+
+  // ── Filter result state ──────────────────────────────────
+  List<_CalEvent> _filterEvents  = [];
+  bool            _loadingFilter = false;
+  String?         _filterError;
 
   // ─────────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
-    _loadMonthEvents();   // populate dot indicators
-    _loadDayEvents(18);   // load default selected day
+    _today        = DateTime.now();
+    _displayMonth = DateTime(_today.year, _today.month, 1);
+    _selectedDate = DateTime(_today.year, _today.month, _today.day);
+    _loadMonthDots();
+    _loadDayEvents(_selectedDate);
   }
 
   // ─────────────────────────────────────────────────────────
-  //  READ: GET /api/v1/events/?month=2026-02
-  //  Used only to mark which days have events (dot indicators).
+  //  MONTH NAVIGATION
   // ─────────────────────────────────────────────────────────
-  Future<void> _loadMonthEvents() async {
+  void _changeMonth(int delta) {
+    final next = DateTime(
+        _displayMonth.year, _displayMonth.month + delta, 1);
+    // Set selected date to 1st of new month, or today if current month
+    final newSel = (next.year == _today.year && next.month == _today.month)
+        ? DateTime(_today.year, _today.month, _today.day)
+        : DateTime(next.year, next.month, 1);
+
+    setState(() {
+      _displayMonth  = next;
+      _selectedDate  = newSel;
+      _eventDays     = {};
+      _dayEvents     = [];
+      _dayError      = null;
+      _activeFilter  = _CalFilter.none;
+      _filterEvents  = [];
+      _filterError   = null;
+    });
+    _loadMonthDots();
+    _loadDayEvents(newSel);
+  }
+
+  // ─────────────────────────────────────────────────────────
+  //  DATE SELECTION — updates selected date and loads events
+  // ─────────────────────────────────────────────────────────
+  void _selectDate(int day) {
+    final date = DateTime(_displayMonth.year, _displayMonth.month, day);
+    setState(() {
+      _selectedDate = date;
+      _activeFilter = _CalFilter.none;
+      _filterEvents = [];
+      _filterError  = null;
+    });
+    _loadDayEvents(date);
+  }
+
+  // ─────────────────────────────────────────────────────────
+  //  GET /api/v1/events/?month=YYYY-MM
+  //  Populates dot markers for the whole month.
+  // ─────────────────────────────────────────────────────────
+  Future<void> _loadMonthDots() async {
+    final monthStr =
+        '${_displayMonth.year}-${_displayMonth.month.toString().padLeft(2, '0')}';
     try {
-      final res = await ApiClient.get('/api/v1/events/?month=2026-02');
-      dev.log('[Calendar] GET /events?month → ${res.statusCode}');
+      final res = await ApiClient.get('/api/v1/events/?month=$monthStr');
+      dev.log('[Cal] GET /events?month=$monthStr → ${res.statusCode}');
       if (!mounted || res.statusCode != 200) return;
 
       final decoded = jsonDecode(res.body);
       final raw = decoded is List
-          ? decoded
+          ? decoded as List
           : (decoded['results'] as List?) ?? [];
 
       final days = raw
           .whereType<Map<String, dynamic>>()
-          .map((j) => _CalEvent.fromJson(j).day)
-          .where((d) => d > 0)
+          .map((j) => _CalEvent.fromJson(j))
+          .where((e) =>
+              e.startDt != null &&
+              e.startDt!.year  == _displayMonth.year &&
+              e.startDt!.month == _displayMonth.month)
+          .map((e) => e.startDt!.day)
           .toSet();
 
       if (mounted) setState(() => _eventDays = days);
     } catch (e) {
-      dev.log('[Calendar] loadMonthEvents error: $e');
+      dev.log('[Cal] loadMonthDots error: $e');
     }
   }
 
   // ─────────────────────────────────────────────────────────
-  //  READ: GET /api/v1/events/?date=2026-02-<day>
-  //  Fetches events for the selected day.
+  //  GET /api/v1/events/?date=YYYY-MM-DD
+  //  Loads events for a specific DateTime (uses cache).
   // ─────────────────────────────────────────────────────────
-  Future<void> _loadDayEvents(int day) async {
+  Future<void> _loadDayEvents(DateTime date) async {
     if (!mounted) return;
+
+    final dateKey = _toIsoDate(date);
+
+    // Serve from cache if available
+    if (_eventCache.containsKey(dateKey)) {
+      setState(() {
+        _dayEvents  = _eventCache[dateKey]!;
+        _loadingDay = false;
+        _dayError   = null;
+      });
+      return;
+    }
+
     setState(() { _loadingDay = true; _dayError = null; });
 
-    final dayStr = day.toString().padLeft(2, '0');
     try {
-      final res = await ApiClient.get('/api/v1/events/?date=2026-02-$dayStr');
-      dev.log('[Calendar] GET /events?date=2026-02-$dayStr → ${res.statusCode}');
-      dev.log('[Calendar] body: ${res.body}');
+      final res = await ApiClient.get('/api/v1/events/?date=$dateKey');
+      dev.log('[Cal] GET /events?date=$dateKey → ${res.statusCode}');
 
       if (!mounted) return;
 
       if (res.statusCode == 200) {
         final decoded = jsonDecode(res.body);
         final raw = decoded is List
-            ? decoded
+            ? decoded as List
             : (decoded['results'] as List?) ?? [];
 
         final events = raw
             .whereType<Map<String, dynamic>>()
             .map(_CalEvent.fromJson)
-            .toList();
+            .where((e) {
+              // Double-check: only events matching this exact local date
+              if (e.startDt == null) return true; // include if no date info
+              return e.startDt!.year  == date.year  &&
+                     e.startDt!.month == date.month &&
+                     e.startDt!.day   == date.day;
+            })
+            .toList()
+          ..sort((a, b) {
+            if (a.startDt == null) return 1;
+            if (b.startDt == null) return -1;
+            return a.startDt!.compareTo(b.startDt!);
+          });
 
-        setState(() {
-          _dayEvents  = events;
-          _loadingDay = false;
-          // Add to dot set if we got results
-          if (events.isNotEmpty) _eventDays.add(day);
-        });
+        // Cache the result
+        _eventCache[dateKey] = events;
+
+        if (mounted) {
+          setState(() {
+            _dayEvents  = events;
+            _loadingDay = false;
+            if (events.isNotEmpty) _eventDays.add(date.day);
+          });
+        }
       } else {
-        setState(() {
+        if (mounted) setState(() {
           _dayError   = 'Could not load events (${res.statusCode}).';
           _loadingDay = false;
         });
       }
     } catch (e, s) {
-      dev.log('[Calendar] loadDayEvents error: $e', stackTrace: s);
+      dev.log('[Cal] loadDayEvents error: $e', stackTrace: s);
       if (mounted) setState(() {
-        _dayError   = 'Network error.';
+        _dayError   = 'Network error. Please try again.';
         _loadingDay = false;
       });
     }
   }
 
   // ─────────────────────────────────────────────────────────
-  //  RSVP toggle (optimistic)
-  //  POST/DELETE /api/v1/events/<uuid>/rsvp/
+  //  FILTER: This Week / This Month / This Weekend
+  //  GET /api/v1/events/?from_date=...&to_date=...
   // ─────────────────────────────────────────────────────────
-  Future<void> _toggleRsvp(_CalEvent ev) async {
-    final wasGoing = ev.isRsvped;
-    _mutateDayEvent(ev.id, isRsvped: !wasGoing,
-        attendingDelta: wasGoing ? -1 : 1);
+  Future<void> _applyFilter(_CalFilter filter) async {
+    if (_activeFilter == filter) {
+      // Toggle off
+      setState(() {
+        _activeFilter = _CalFilter.none;
+        _filterEvents = [];
+        _filterError  = null;
+      });
+      return;
+    }
 
+    setState(() {
+      _activeFilter  = filter;
+      _loadingFilter = true;
+      _filterError   = null;
+      _filterEvents  = [];
+    });
+
+    late DateTime from;
+    late DateTime to;
+    final now = _today;
+
+    switch (filter) {
+      case _CalFilter.thisWeek:
+        // Monday → Sunday of the current ISO week
+        final weekday = now.weekday; // 1=Mon, 7=Sun
+        from = DateTime(now.year, now.month, now.day - (weekday - 1));
+        to   = from.add(const Duration(days: 6));
+        break;
+
+      case _CalFilter.thisMonth:
+        from = DateTime(now.year, now.month, 1);
+        to   = DateTime(now.year, now.month + 1, 0); // last day of month
+        break;
+
+      case _CalFilter.thisWeekend:
+        // Next or current Saturday & Sunday
+        final daysToSat = (6 - now.weekday + 7) % 7;
+        final sat = DateTime(now.year, now.month, now.day + daysToSat);
+        from = sat;
+        to   = sat.add(const Duration(days: 1)); // Sat + Sun
+        break;
+
+      case _CalFilter.none:
+        return;
+    }
+
+    final fromStr = _toIsoDate(from);
+    final toStr   = _toIsoDate(to);
+
+    try {
+      final res = await ApiClient.get(
+          '/api/v1/events/?from_date=${fromStr}T00:00:00Z&to_date=${toStr}T23:59:59Z');
+      dev.log('[Cal] GET /events?from=$fromStr&to=$toStr → ${res.statusCode}');
+
+      if (!mounted) return;
+
+      if (res.statusCode == 200) {
+        final decoded = jsonDecode(res.body);
+        final raw = decoded is List
+            ? decoded as List
+            : (decoded['results'] as List?) ?? [];
+
+        final events = raw
+            .whereType<Map<String, dynamic>>()
+            .map(_CalEvent.fromJson)
+            .toList()
+          ..sort((a, b) {
+            if (a.startDt == null) return 1;
+            if (b.startDt == null) return -1;
+            return a.startDt!.compareTo(b.startDt!);
+          });
+
+        setState(() {
+          _filterEvents  = events;
+          _loadingFilter = false;
+        });
+      } else {
+        setState(() {
+          _filterError   = 'Could not load events (${res.statusCode}).';
+          _loadingFilter = false;
+        });
+      }
+    } catch (e) {
+      dev.log('[Cal] filter error: $e');
+      if (mounted) setState(() {
+        _filterError   = 'Network error. Please try again.';
+        _loadingFilter = false;
+      });
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────
+  //  OPTIMISTIC MUTATIONS
+  // ─────────────────────────────────────────────────────────
+  Future<void> _toggleRsvp(_CalEvent ev, {bool fromFilter = false}) async {
+    final wasGoing = ev.isRsvped;
+    _mutate(ev.id, isRsvped: !wasGoing,
+        attendingDelta: wasGoing ? -1 : 1, fromFilter: fromFilter);
     final ok = await apiToggleRsvp(ev.id, wasGoing: wasGoing);
     if (!ok) {
-      _mutateDayEvent(ev.id, isRsvped: wasGoing,
-          attendingDelta: wasGoing ? 1 : -1);
+      _mutate(ev.id, isRsvped: wasGoing,
+          attendingDelta: wasGoing ? 1 : -1, fromFilter: fromFilter);
       showSnack('Could not update RSVP. Please try again.');
     } else {
-      showSnack(!wasGoing
-          ? "✅ You're going to ${ev.name}!"
-          : 'RSVP cancelled', bg: ev.catColor);
+      showSnack(
+        wasGoing ? 'RSVP cancelled' : "✅ You're going to ${ev.name}!",
+        bg: ev.catColor,
+      );
     }
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  Reminder toggle
-  //  POST/DELETE /api/v1/events/reminders/
-  // ─────────────────────────────────────────────────────────
-  Future<void> _toggleReminder(_CalEvent ev) async {
-    final hadReminder = ev.hasReminder;
-    _mutateDayEvent(ev.id, hasReminder: !hadReminder);
-
-    final ok = hadReminder
+  Future<void> _toggleReminder(_CalEvent ev, {bool fromFilter = false}) async {
+    final had = ev.hasReminder;
+    _mutate(ev.id, hasReminder: !had, fromFilter: fromFilter);
+    final ok = had
         ? await apiDeleteReminder(ev.id)
         : await apiAddReminder(ev.id);
-
     if (!ok) {
-      _mutateDayEvent(ev.id, hasReminder: hadReminder);
+      _mutate(ev.id, hasReminder: had, fromFilter: fromFilter);
       showSnack('Could not update reminder.');
     } else {
-      showSnack(hadReminder ? 'Reminder removed.' : '🔔 Reminder set!');
+      showSnack(had ? 'Reminder removed.' : '🔔 Reminder set!');
     }
   }
 
-  void _mutateDayEvent(String id, {
-    bool? isRsvped, bool? isSaved, bool? hasReminder, int attendingDelta = 0,
+  Future<void> _toggleSave(_CalEvent ev, {bool fromFilter = false}) async {
+    final wasSaved = ev.isSaved;
+    _mutate(ev.id, isSaved: !wasSaved, fromFilter: fromFilter);
+    final ok = await apiToggleSave(ev.id, wasSaved: wasSaved);
+    if (!ok) {
+      _mutate(ev.id, isSaved: wasSaved, fromFilter: fromFilter);
+      showSnack('Could not save event.');
+    } else {
+      showSnack(wasSaved ? 'Event unsaved.' : '❤️ Event saved!');
+    }
+  }
+
+  void _mutate(String id, {
+    bool? isRsvped,
+    bool? isSaved,
+    bool? hasReminder,
+    int   attendingDelta = 0,
+    bool  fromFilter     = false,
   }) {
     if (!mounted) return;
+
+    _CalEvent patch(_CalEvent e) => e.id == id
+        ? e.copyWith(
+            isRsvped:       isRsvped,
+            isSaved:        isSaved,
+            hasReminder:    hasReminder,
+            attendingCount: e.attendingCount + attendingDelta)
+        : e;
+
     setState(() {
-      _dayEvents = _dayEvents.map((e) => e.id == id
-          ? e.copyWith(
-              isRsvped:       isRsvped,
-              isSaved:        isSaved,
-              hasReminder:    hasReminder,
-              attendingCount: e.attendingCount + attendingDelta)
-          : e).toList();
+      if (fromFilter) {
+        _filterEvents = _filterEvents.map(patch).toList();
+      } else {
+        _dayEvents = _dayEvents.map(patch).toList();
+        // Also update cache
+        final key = _toIsoDate(_selectedDate);
+        if (_eventCache.containsKey(key)) {
+          _eventCache[key] = _eventCache[key]!.map(patch).toList();
+        }
+      }
     });
+  }
+
+  // ─────────────────────────────────────────────────────────
+  //  DATE HELPERS
+  // ─────────────────────────────────────────────────────────
+  int get _daysInMonth =>
+      DateUtils.getDaysInMonth(_displayMonth.year, _displayMonth.month);
+
+  /// Sunday-based offset (0 = Sun column)
+  int get _firstWeekdayOffset {
+    final wd = DateTime(_displayMonth.year, _displayMonth.month, 1).weekday;
+    return wd % 7;
+  }
+
+  bool _isToday(int day) =>
+      _displayMonth.year  == _today.year  &&
+      _displayMonth.month == _today.month &&
+      day                 == _today.day;
+
+  bool _isSelected(int day) =>
+      _displayMonth.year  == _selectedDate.year  &&
+      _displayMonth.month == _selectedDate.month &&
+      day                 == _selectedDate.day;
+
+  bool _isPastDay(int day) =>
+      DateTime(_displayMonth.year, _displayMonth.month, day)
+          .isBefore(DateTime(_today.year, _today.month, _today.day));
+
+  bool _isUpcoming(int day) =>
+      !_isPastDay(day) && !_isToday(day);
+
+  /// 7-day strip starting from today (or from 1st of displayed month)
+  List<DateTime> get _weekStrip {
+    final base = (_displayMonth.year == _today.year &&
+                  _displayMonth.month == _today.month)
+        ? _today
+        : DateTime(_displayMonth.year, _displayMonth.month, 1);
+    return List.generate(7, (i) =>
+        DateTime(base.year, base.month, base.day + i));
+  }
+
+  String _monthLabel() {
+    const months = [
+      'January','February','March','April','May','June',
+      'July','August','September','October','November','December',
+    ];
+    return '${months[_displayMonth.month - 1]} ${_displayMonth.year}';
+  }
+
+  String _dayLabel(DateTime date) {
+    const weekdays = [
+      'Monday','Tuesday','Wednesday','Thursday',
+      'Friday','Saturday','Sunday',
+    ];
+    const months = [
+      'Jan','Feb','Mar','Apr','May','Jun',
+      'Jul','Aug','Sep','Oct','Nov','Dec',
+    ];
+    return '${weekdays[date.weekday - 1]}, ${months[date.month - 1]} ${date.day}';
+  }
+
+  String _shortWeekday(DateTime dt) {
+    const labels = ['MON','TUE','WED','THU','FRI','SAT','SUN'];
+    return labels[dt.weekday - 1];
   }
 
   // ─────────────────────────────────────────────────────────
@@ -420,6 +697,9 @@ class _EBCalendarScreenState extends State<EBCalendarScreen>
   // ─────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
+    // When a filter is active, show filter results instead of day events
+    final showingFilter = _activeFilter != _CalFilter.none;
+
     return Scaffold(
       backgroundColor: EBColors.surface2,
       appBar: AppBar(
@@ -427,1040 +707,453 @@ class _EBCalendarScreenState extends State<EBCalendarScreen>
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_new,
-            size: 18, color: EBColors.text),
+              size: 18, color: EBColors.text),
           onPressed: () => Navigator.pop(context),
         ),
         title: const Text('Event Calendar', style: TextStyle(
-          fontSize: 16, fontWeight: FontWeight.w800, color: EBColors.text)),
+            fontSize: 16,
+            fontWeight: FontWeight.w800,
+            color: EBColors.text)),
         actions: [
           Container(
             margin: const EdgeInsets.only(right: 12),
             padding: const EdgeInsets.all(7),
             decoration: BoxDecoration(
-              color: EBColors.brandPale,
-              borderRadius: BorderRadius.circular(11)),
+                color: EBColors.brandPale,
+                borderRadius: BorderRadius.circular(11)),
             child: const Text('🗂', style: TextStyle(fontSize: 18))),
         ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(1),
           child: Divider(color: EBColors.border, height: 1)),
       ),
+
       body: RefreshIndicator(
         color: EBColors.brand,
         onRefresh: () async {
-          await _loadMonthEvents();
-          await _loadDayEvents(_selectedDay);
+          _eventCache.clear();
+          await _loadMonthDots();
+          await _loadDayEvents(_selectedDate);
         },
         child: SingleChildScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
 
-            // ── Month header ─────────────────────────────
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text('February 2026', style: TextStyle(
-                    fontSize: 18, fontStyle: FontStyle.italic,
-                    fontWeight: FontWeight.w700, color: EBColors.text)),
-                  Row(children: [
-                    _CalBtn('←'),
-                    const SizedBox(width: 6),
-                    _CalBtn('→'),
-                  ]),
-                ])),
-
-            // ── Day-of-week headers ──────────────────────
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-              child: Row(
-                children: ['S','M','T','W','T','F','S'].map((d) =>
-                  Expanded(child: Center(child: Text(d, style: TextStyle(
-                    fontSize: 11, fontWeight: FontWeight.w800,
-                    color: EBColors.text3))))).toList())),
-
-            // ── Calendar grid ────────────────────────────
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
-              child: GridView.count(
-                crossAxisCount: 7, shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                mainAxisSpacing: 3, crossAxisSpacing: 3,
-                childAspectRatio: 1.0,
-                children: List.generate(28, (i) {
-                  final day     = i + 1;
-                  final isToday = day == _today;
-                  final isSel   = day == _selectedDay && !isToday;
-                  final hasEvent= _eventDays.contains(day);
-                  final isPast  = day < _today;
-
-                  return GestureDetector(
-                    onTap: () {
-                      setState(() => _selectedDay = day);
-                      _loadDayEvents(day);
-                    },
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: isToday  ? EBColors.brand
-                             : isSel    ? EBColors.brandPale
-                             : Colors.transparent,
-                        borderRadius: BorderRadius.circular(9)),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text('$day', style: TextStyle(
-                            fontSize: 13, fontWeight: FontWeight.w700,
-                            color: isToday  ? Colors.white
-                                 : isPast   ? EBColors.text3
-                                 : isSel    ? EBColors.brand
-                                 : EBColors.text2)),
-                          if (hasEvent)
-                            Container(
-                              width: 4, height: 4,
-                              margin: const EdgeInsets.only(top: 2),
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: isToday
-                                  ? Colors.white.withOpacity(0.7)
-                                  : EBColors.brandLight)),
-                        ]),
-                    ),
-                  );
-                }),
-              )),
-
-            // ── Selected day strip ───────────────────────
-            Container(
-              margin: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-              decoration: BoxDecoration(
-                color: EBColors.brandPale,
-                borderRadius: BorderRadius.circular(12)),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(_dayLabel(_selectedDay), style: TextStyle(
-                    fontSize: 13, fontWeight: FontWeight.w800,
-                    color: EBColors.brand)),
-                  _loadingDay
-                    ? const SizedBox(width: 14, height: 14,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2, color: EBColors.brand))
-                    : Text(
-                        '${_dayEvents.length} event${_dayEvents.length != 1 ? "s" : ""}',
-                        style: TextStyle(
-                          fontSize: 12, fontWeight: FontWeight.w700,
-                          color: EBColors.brand)),
-                ])),
-
-            // ── Events for selected day ──────────────────
-            if (_loadingDay)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 24),
-                child: Center(child: CircularProgressIndicator()))
-            else if (_dayError != null)
+              // ── Month header + nav ───────────────────────
               Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(children: [
-                  Text(_dayError!, textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 13, color: EBColors.text3)),
-                  const SizedBox(height: 8),
-                  TextButton.icon(
-                    onPressed: () => _loadDayEvents(_selectedDay),
-                    icon: const Icon(Icons.refresh_rounded, size: 16),
-                    label: const Text('Retry')),
-                ]))
-            else if (_dayEvents.isNotEmpty)
-              Container(
-                margin: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-                decoration: EBTheme.cardSm,
-                child: Column(
-                  children: _dayEvents.map((ev) => _CalEventRow(
-                    event: ev,
-                    // RSVP  — POST/DELETE /api/v1/events/<uuid>/rsvp/
-                    onRsvpTap: () => _toggleRsvp(ev),
-                    // Reminder — POST/DELETE /api/v1/events/reminders/
-                    onReminderTap: () => _toggleReminder(ev),
-                  )).toList()))
-            else
-              Container(
-                margin: const EdgeInsets.symmetric(horizontal: 16),
-                padding: const EdgeInsets.all(24),
-                child: Center(child: Text('No events this day',
-                  style: TextStyle(fontSize: 13, color: EBColors.text3)))),
-
-            // ── Week strip ───────────────────────────────
-            EBSectionLabel(title: '📅 This Week'),
-            SizedBox(
-              height: 70,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                itemCount: _weekDays.length,
-                separatorBuilder: (_, __) => const SizedBox(width: 8),
-                itemBuilder: (_, i) {
-                  final d     = _weekDays[i];
-                  final hasEv = _eventDays.contains(d);
-                  final isSel = d == _selectedDay;
-
-                  return GestureDetector(
-                    onTap: () {
-                      setState(() => _selectedDay = d);
-                      _loadDayEvents(d);
-                    },
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 180),
-                      width: 52,
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: isSel ? EBColors.brandPale : EBColors.surface3,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: isSel
-                            ? EBColors.brandLight
-                            : Colors.transparent,
-                          width: 1.5)),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text(_weekLabels[i], style: TextStyle(
-                            fontSize: 10, fontWeight: FontWeight.w800,
-                            color: isSel ? EBColors.brand : EBColors.text3)),
-                          Text('$d', style: TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.w900,
-                            color: isSel ? EBColors.brand : EBColors.text2)),
-                          if (hasEv)
-                            Container(
-                              width: 6, height: 6,
-                              margin: const EdgeInsets.only(top: 3),
-                              decoration: BoxDecoration(
-                                color: isSel
-                                  ? EBColors.brand
-                                  : EBColors.brandLight,
-                                shape: BoxShape.circle)),
-                        ])));
-                })),
-
-            const SizedBox(height: 30),
-          ])),
-      ),
-    );
-  }
-
-  String _dayLabel(int d) {
-    const labels = {
-      17: 'Monday, Feb 17',    18: 'Tuesday, Feb 18',
-      19: 'Wednesday, Feb 19', 20: 'Thursday, Feb 20',
-      21: 'Friday, Feb 21',    22: 'Saturday, Feb 22',
-    };
-    return labels[d] ?? 'February $d, 2026';
-  }
-}
-
-// ═════════════════════════════════════════════════════════════
-//  SCREEN 2 — MY RSVPs
-//  GET    /api/v1/events/?rsvped=true   → my RSVP'd events
-//  POST   /api/v1/events/<uuid>/rsvp/   → restore RSVP
-//  DELETE /api/v1/events/<uuid>/rsvp/   → cancel RSVP
-// ═════════════════════════════════════════════════════════════
-class EBRsvpScreen extends StatefulWidget {
-  /// Optional event UUID — if provided, show that event's hero at the top.
-  final String? eventId;
-  const EBRsvpScreen({super.key, this.eventId});
-  @override
-  State<EBRsvpScreen> createState() => _EBRsvpScreenState();
-}
-
-class _EBRsvpScreenState extends State<EBRsvpScreen>
-    with _EventActions<EBRsvpScreen> {
-
-  List<_CalEvent> _rsvps       = [];
-  _CalEvent?      _heroEvent;
-  bool            _loading     = true;
-  String?         _error;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadRsvps();
-    if (widget.eventId != null) _loadHeroEvent(widget.eventId!);
-  }
-
-  // ─────────────────────────────────────────────────────────
-  //  READ: GET /api/v1/events/?rsvped=true
-  // ─────────────────────────────────────────────────────────
-  Future<void> _loadRsvps() async {
-    if (mounted) setState(() { _loading = true; _error = null; });
-    try {
-      final res = await ApiClient.get('/api/v1/events/?rsvped=true');
-      dev.log('[RSVPs] GET /events?rsvped=true → ${res.statusCode}');
-      dev.log('[RSVPs] body: ${res.body}');
-
-      if (!mounted) return;
-
-      if (res.statusCode == 200) {
-        final decoded = jsonDecode(res.body);
-        final raw = decoded is List
-            ? decoded
-            : (decoded['results'] as List?) ?? [];
-
-        setState(() {
-          _rsvps  = raw.whereType<Map<String, dynamic>>()
-              .map(_CalEvent.fromJson).toList();
-          _loading = false;
-        });
-      } else {
-        setState(() {
-          _error   = 'Could not load RSVPs (${res.statusCode}).';
-          _loading = false;
-        });
-      }
-    } catch (e, s) {
-      dev.log('[RSVPs] error: $e', stackTrace: s);
-      if (mounted) setState(() {
-        _error   = 'Network error. Pull to refresh.';
-        _loading = false;
-      });
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────
-  //  READ: GET /api/v1/events/<uuid>/  — hero event detail
-  // ─────────────────────────────────────────────────────────
-  Future<void> _loadHeroEvent(String id) async {
-    try {
-      final res = await ApiClient.get('/api/v1/events/$id/');
-      dev.log('[RSVPs] GET /events/$id/ → ${res.statusCode}');
-      if (!mounted || res.statusCode != 200) return;
-      final decoded = jsonDecode(res.body);
-      if (decoded is Map<String, dynamic> && mounted) {
-        setState(() => _heroEvent = _CalEvent.fromJson(decoded));
-      }
-    } catch (e) {
-      dev.log('[RSVPs] loadHeroEvent error: $e');
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────
-  //  RSVP toggle (cancel / restore)
-  //  POST/DELETE /api/v1/events/<uuid>/rsvp/
-  // ─────────────────────────────────────────────────────────
-  Future<void> _toggleRsvp(_CalEvent ev) async {
-    final wasGoing = ev.isRsvped;
-    _mutate(ev.id, isRsvped: !wasGoing,
-        attendingDelta: wasGoing ? -1 : 1);
-
-    final ok = await apiToggleRsvp(ev.id, wasGoing: wasGoing);
-    if (!ok) {
-      _mutate(ev.id, isRsvped: wasGoing,
-          attendingDelta: wasGoing ? 1 : -1);
-      showSnack('Could not update RSVP. Please try again.');
-    } else {
-      showSnack(wasGoing ? 'RSVP cancelled for ${ev.name}' : 'RSVP restored!',
-        bg: wasGoing ? Colors.grey : ev.catColor);
-    }
-  }
-
-  void _mutate(String id, {bool? isRsvped, int attendingDelta = 0}) {
-    if (!mounted) return;
-    setState(() {
-      _rsvps = _rsvps.map((e) => e.id == id
-          ? e.copyWith(
-              isRsvped: isRsvped,
-              attendingCount: e.attendingCount + attendingDelta)
-          : e).toList();
-    });
-  }
-
-  // ─────────────────────────────────────────────────────────
-  //  BUILD
-  // ─────────────────────────────────────────────────────────
-  @override
-  Widget build(BuildContext context) {
-    final hero = _heroEvent ?? (_rsvps.isNotEmpty ? _rsvps.first : null);
-
-    return Scaffold(
-      backgroundColor: EBColors.surface2,
-      appBar: AppBar(
-        backgroundColor: EBColors.surface, elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new,
-            size: 18, color: EBColors.text),
-          onPressed: () => Navigator.pop(context)),
-        title: const Text('My RSVPs', style: TextStyle(
-          fontSize: 16, fontWeight: FontWeight.w800, color: EBColors.text)),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(1),
-          child: Divider(color: EBColors.border, height: 1)),
-      ),
-      body: RefreshIndicator(
-        color: EBColors.brand,
-        onRefresh: _loadRsvps,
-        child: CustomScrollView(slivers: [
-
-          // ── Hero banner ────────────────────────────────
-          SliverToBoxAdapter(
-            child: Container(
-              height: 200,
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [EBColors.brand, EBColors.brandDark],
-                  begin: Alignment.topLeft, end: Alignment.bottomRight)),
-              child: Stack(children: [
-                Center(child: Text(
-                  hero != null && hero.category.contains('Sport') ? '⚽'
-                    : hero != null && hero.category.contains('Cultural') ? '🎭'
-                    : '🎓',
-                  style: const TextStyle(fontSize: 80))),
-                Positioned(bottom: 0, left: 0, right: 0,
-                  child: Container(
-                    padding: const EdgeInsets.fromLTRB(16, 24, 16, 14),
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [Colors.transparent,
-                          Colors.black.withOpacity(0.65)],
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter)),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                            color: hero?.catColor ?? EBColors.brand,
-                            borderRadius: BorderRadius.circular(8)),
-                          child: Text(
-                            hero?.category.isNotEmpty == true
-                              ? hero!.category : '📚 Academic',
-                            style: const TextStyle(
-                              fontSize: 10, fontWeight: FontWeight.w800,
-                              color: Colors.white))),
-                        const SizedBox(height: 6),
-                        Text(
-                          hero?.name ?? 'My Upcoming Events',
-                          style: const TextStyle(
-                            fontSize: 17, fontStyle: FontStyle.italic,
-                            color: Colors.white, height: 1.3)),
-                      ]))),
-              ])),
-          ),
-
-          // ── Hero event detail row ──────────────────────
-          if (hero != null)
-            SliverToBoxAdapter(
-              child: Container(
-                margin: const EdgeInsets.all(16),
-                padding: const EdgeInsets.all(14),
-                decoration: EBTheme.cardSm,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('📅 ${hero.date}', style: TextStyle(
-                              fontSize: 13, fontWeight: FontWeight.w700,
-                              color: EBColors.text)),
-                            Text(hero.meta, style: TextStyle(
-                              fontSize: 11, color: EBColors.text3)),
-                          ]),
-                        // RSVP — POST/DELETE /api/v1/events/<uuid>/rsvp/
-                        GestureDetector(
-                          onTap: () => _toggleRsvp(hero),
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 200),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 7),
-                            decoration: BoxDecoration(
-                              color: hero.isRsvped
-                                ? EBColors.greenPale : EBColors.brandPale,
-                              borderRadius: BorderRadius.circular(10)),
-                            child: Text(
-                              hero.isRsvped ? '✅ Going' : 'RSVP →',
-                              style: TextStyle(
-                                fontSize: 12, fontWeight: FontWeight.w800,
-                                color: hero.isRsvped
-                                  ? EBColors.green : EBColors.brand)))),
-                      ]),
-                    const SizedBox(height: 10),
-                    Text('${hero.attendingCount} people confirmed',
-                      style: TextStyle(
-                        fontSize: 12, color: EBColors.text3)),
+                    Text(_monthLabel(), style: const TextStyle(
+                        fontSize: 18,
+                        fontStyle: FontStyle.italic,
+                        fontWeight: FontWeight.w700,
+                        color: EBColors.text)),
+                    Row(children: [
+                      _NavBtn(label: '←', onTap: () => _changeMonth(-1)),
+                      const SizedBox(width: 6),
+                      _NavBtn(label: '→', onTap: () => _changeMonth(1)),
+                    ]),
                   ])),
-            ),
 
-          // ── RSVP list ─────────────────────────────────
-          SliverToBoxAdapter(
-            child: EBSectionLabel(
-              title: _loading
-                ? 'My RSVPs'
-                : 'My RSVPs (${_rsvps.length} Upcoming)')),
+              // ── Filter tags row ──────────────────────────
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                child: Row(
+                  children: [
+                    _CalFilterTag(
+                      label:    'This Week',
+                      active:   _activeFilter == _CalFilter.thisWeek,
+                      onTap:    () => _applyFilter(_CalFilter.thisWeek),
+                      icon:     '📆',
+                    ),
+                    const SizedBox(width: 8),
+                    _CalFilterTag(
+                      label:    'This Month',
+                      active:   _activeFilter == _CalFilter.thisMonth,
+                      onTap:    () => _applyFilter(_CalFilter.thisMonth),
+                      icon:     '🗓',
+                    ),
+                    const SizedBox(width: 8),
+                    _CalFilterTag(
+                      label:    'Weekend',
+                      active:   _activeFilter == _CalFilter.thisWeekend,
+                      onTap:    () => _applyFilter(_CalFilter.thisWeekend),
+                      icon:     '🎉',
+                    ),
+                  ])),
 
-          if (_loading)
-            const SliverToBoxAdapter(
-              child: Padding(
-                padding: EdgeInsets.symmetric(vertical: 32),
-                child: Center(child: CircularProgressIndicator())))
-          else if (_error != null)
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(children: [
-                  Text(_error!, textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 13, color: EBColors.text3)),
-                  const SizedBox(height: 10),
-                  TextButton.icon(
-                    onPressed: _loadRsvps,
-                    icon: const Icon(Icons.refresh_rounded, size: 16),
-                    label: const Text('Retry')),
-                ])))
-          else if (_rsvps.isEmpty)
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.all(32),
-                child: Center(child: Text("You haven't RSVP'd to any events yet.",
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 13, color: EBColors.text3)))))
-          else
-            SliverToBoxAdapter(
-              child: Container(
-                margin: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-                decoration: EBTheme.cardSm,
-                child: Column(
-                  children: _rsvps.map((ev) => _RsvpRow(
-                    event: ev,
-                    // POST/DELETE /api/v1/events/<uuid>/rsvp/
-                    onToggle: () => _toggleRsvp(ev),
-                  )).toList()))),
+              // ── Day-of-week headers ──────────────────────
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                child: Row(
+                  children: ['S','M','T','W','T','F','S']
+                      .map((d) => Expanded(
+                          child: Center(child: Text(d, style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                            color: EBColors.text3)))))
+                      .toList())),
 
-          // ── Static attendee list ───────────────────────
-          SliverToBoxAdapter(child: EBSectionLabel(title: 'Attendees')),
-          SliverToBoxAdapter(
-            child: Container(
-              margin: const EdgeInsets.fromLTRB(16, 0, 16, 0),
-              decoration: EBTheme.cardSm,
-              child: Column(children: [
-                _AttendeeRow(emoji: '👩‍💻', name: 'Sarah K.',
-                  sub: 'BSc CS',       color: EBColors.brandLight),
-                Divider(color: EBColors.border, height: 1),
-                _AttendeeRow(emoji: '👨‍🔬', name: 'James M.',
-                  sub: 'BSc Mech Eng', color: EBColors.blue),
-                Divider(color: EBColors.border, height: 1),
-                _AttendeeRow(emoji: '👩‍🎓', name: 'Aisha O.',
-                  sub: 'BSc Civil',    color: EBColors.pink),
-                Divider(color: EBColors.border, height: 1),
-                _AttendeeRow(emoji: '👨‍🏫', name: 'David L.',
-                  sub: 'BA Econ',      color: EBColors.coral),
-                Padding(
-                  padding: const EdgeInsets.all(9),
-                  child: Center(child: Text(
-                    '+ ${hero != null ? (hero.attendingCount - 4).clamp(0, 9999) : 77} more attendees',
-                    style: TextStyle(fontSize: 12,
-                      fontWeight: FontWeight.w700, color: EBColors.brand)))),
-              ]))),
+              // ── Calendar grid ────────────────────────────
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
+                child: GridView.count(
+                  crossAxisCount: 7,
+                  shrinkWrap:     true,
+                  physics:        const NeverScrollableScrollPhysics(),
+                  mainAxisSpacing:  3,
+                  crossAxisSpacing: 3,
+                  childAspectRatio: 1.0,
+                  children: [
+                    // Empty offset cells
+                    ...List.generate(
+                        _firstWeekdayOffset,
+                        (_) => const SizedBox.shrink()),
 
-          const SliverToBoxAdapter(child: SizedBox(height: 80)),
-        ]),
-      ),
-    );
-  }
-}
+                    // Day cells
+                    ...List.generate(_daysInMonth, (i) {
+                      final day      = i + 1;
+                      final isToday  = _isToday(day);
+                      final isSel    = _isSelected(day) && !isToday;
+                      final hasEv    = _eventDays.contains(day);
+                      final isPast   = _isPastDay(day);
+                      final upcoming = _isUpcoming(day);
 
-// ═════════════════════════════════════════════════════════════
-//  SCREEN 3 — REMINDERS
-//  GET    /api/v1/events/reminders/        → list reminders
-//  POST   /api/v1/events/reminders/        → add reminder
-//  DELETE /api/v1/events/reminders/        → remove reminder
-//  PATCH  /api/v1/events/reminders/ (via preferences body) → update notification prefs
-// ═════════════════════════════════════════════════════════════
-class EBRemindersScreen extends StatefulWidget {
-  const EBRemindersScreen({super.key});
-  @override
-  State<EBRemindersScreen> createState() => _EBRemindersScreenState();
-}
+                      return GestureDetector(
+                        onTap: () => _selectDate(day),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: isToday ? EBColors.brand
+                                 : isSel   ? EBColors.brandPale
+                                 : Colors.transparent,
+                            borderRadius: BorderRadius.circular(9)),
+                          child: Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Text('$day', style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                    color: isToday ? Colors.white
+                                         : isPast  ? EBColors.text3
+                                         : isSel   ? EBColors.brand
+                                         : EBColors.text2)),
 
-class _EBRemindersScreenState extends State<EBRemindersScreen>
-    with _EventActions<EBRemindersScreen> {
+                                  // Dot marker for dates with events
+                                  if (hasEv)
+                                    Container(
+                                      width: 4, height: 4,
+                                      margin: const EdgeInsets.only(top: 2),
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: isToday
+                                            ? Colors.white.withOpacity(0.9)
+                                            : upcoming
+                                                ? EBColors.brand
+                                                : EBColors.brandLight)),
+                                ]),
 
-  List<_Reminder> _reminders    = [];
-  List<_CalEvent> _rsvpEvents   = [];
-  _Reminder?      _urgentReminder; // first reminder < 24h away
-  bool            _loadingRem   = true;
-  bool            _loadingRsvp  = true;
-  String?         _error;
+                              // Upcoming ring: subtle border for future event days
+                              if (hasEv && upcoming && !isToday && !isSel)
+                                Container(
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(9),
+                                    border: Border.all(
+                                        color: EBColors.brandLight,
+                                        width: 1.2))),
+                            ])));
+                    }),
+                  ])),
 
-  // Notification preferences — toggled locally and PATCH'd to server
-  bool _remind24h   = true;
-  bool _remind1h    = true;
-  bool _organiserUp = true;
-  bool _nearby      = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadReminders();
-    _loadRsvpEvents();
-  }
-
-  // ─────────────────────────────────────────────────────────
-  //  READ: GET /api/v1/events/reminders/
-  // ─────────────────────────────────────────────────────────
-  Future<void> _loadReminders() async {
-    if (mounted) setState(() { _loadingRem = true; _error = null; });
-    try {
-      final res = await ApiClient.get('/api/v1/events/reminders/');
-      dev.log('[Reminders] GET /reminders → ${res.statusCode}');
-      dev.log('[Reminders] body: ${res.body}');
-
-      if (!mounted) return;
-
-      if (res.statusCode == 200) {
-        final decoded = jsonDecode(res.body);
-        final raw = decoded is List
-            ? decoded
-            : (decoded['results'] as List?) ?? [];
-
-        final reminders = raw
-            .whereType<Map<String, dynamic>>()
-            .map(_Reminder.fromJson)
-            .toList();
-
-        setState(() {
-          _reminders      = reminders;
-          _loadingRem     = false;
-          // First reminder is shown as the urgent banner
-          _urgentReminder = reminders.isNotEmpty ? reminders.first : null;
-        });
-      } else {
-        setState(() {
-          _error      = 'Could not load reminders (${res.statusCode}).';
-          _loadingRem = false;
-        });
-      }
-    } catch (e, s) {
-      dev.log('[Reminders] error: $e', stackTrace: s);
-      if (mounted) setState(() {
-        _error      = 'Network error.';
-        _loadingRem = false;
-      });
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────
-  //  READ: GET /api/v1/events/?rsvped=true
-  //  Reuse for "My RSVPs" list inside this screen
-  // ─────────────────────────────────────────────────────────
-  Future<void> _loadRsvpEvents() async {
-    if (mounted) setState(() => _loadingRsvp = true);
-    try {
-      final res = await ApiClient.get('/api/v1/events/?rsvped=true');
-      dev.log('[Reminders] GET /events?rsvped=true → ${res.statusCode}');
-      if (!mounted) return;
-
-      if (res.statusCode == 200) {
-        final decoded = jsonDecode(res.body);
-        final raw = decoded is List
-            ? decoded
-            : (decoded['results'] as List?) ?? [];
-
-        setState(() {
-          _rsvpEvents  = raw.whereType<Map<String, dynamic>>()
-              .map(_CalEvent.fromJson).toList();
-          _loadingRsvp = false;
-        });
-      } else {
-        setState(() => _loadingRsvp = false);
-      }
-    } catch (e) {
-      if (mounted) setState(() => _loadingRsvp = false);
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────
-  //  DELETE reminder
-  //  DELETE /api/v1/events/reminders/  {eventId}
-  // ─────────────────────────────────────────────────────────
-  Future<void> _removeReminder(_Reminder r) async {
-    // Optimistic remove
-    setState(() => _reminders.remove(r));
-
-    final ok = await apiDeleteReminder(r.eventId);
-    if (!ok) {
-      setState(() => _reminders.insert(0, r)); // revert
-      showSnack('Could not remove reminder.');
-    } else {
-      showSnack('Reminder removed.');
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────
-  //  UPDATE: notification preferences
-  //  PATCH /api/v1/events/reminders/
-  // ─────────────────────────────────────────────────────────
-  Future<void> _updatePref(String key, bool value) async {
-    try {
-      await ApiClient.patch('/api/v1/events/reminders/', body: {
-        key: value,
-      });
-      dev.log('[Reminders] PATCH prefs $key=$value');
-    } catch (e) {
-      dev.log('[Reminders] pref update error: $e');
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────
-  //  RSVP cancel from this screen
-  //  DELETE /api/v1/events/<uuid>/rsvp/
-  // ─────────────────────────────────────────────────────────
-  Future<void> _toggleRsvp(_CalEvent ev) async {
-    final wasGoing = ev.isRsvped;
-    setState(() {
-      _rsvpEvents = _rsvpEvents.map((e) => e.id == ev.id
-          ? e.copyWith(isRsvped: !wasGoing) : e).toList();
-    });
-
-    final ok = await apiToggleRsvp(ev.id, wasGoing: wasGoing);
-    if (!ok) {
-      setState(() {
-        _rsvpEvents = _rsvpEvents.map((e) => e.id == ev.id
-            ? e.copyWith(isRsvped: wasGoing) : e).toList();
-      });
-      showSnack('Could not update RSVP.');
-    } else {
-      showSnack(wasGoing
-          ? 'RSVP cancelled for ${ev.name}' : 'RSVP restored!');
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────
-  //  BUILD
-  // ─────────────────────────────────────────────────────────
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: EBColors.surface2,
-      appBar: AppBar(
-        backgroundColor: EBColors.surface, elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new,
-            size: 18, color: EBColors.text),
-          onPressed: () => Navigator.pop(context)),
-        title: const Text('My RSVPs & Reminders', style: TextStyle(
-          fontSize: 16, fontWeight: FontWeight.w800, color: EBColors.text)),
-        actions: [
-          Container(
-            margin: const EdgeInsets.only(right: 12),
-            padding: const EdgeInsets.all(7),
-            decoration: BoxDecoration(
-              color: EBColors.brandPale,
-              borderRadius: BorderRadius.circular(11)),
-            child: const Text('⚙️', style: TextStyle(fontSize: 18))),
-        ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(1),
-          child: Divider(color: EBColors.border, height: 1)),
-      ),
-      body: RefreshIndicator(
-        color: EBColors.brand,
-        onRefresh: () async {
-          await Future.wait([_loadReminders(), _loadRsvpEvents()]);
-        },
-        child: CustomScrollView(slivers: [
-
-          // ── Urgent reminder banner ─────────────────────
-          SliverToBoxAdapter(
-            child: _loadingRem
-              ? const Padding(
-                  padding: EdgeInsets.all(24),
-                  child: Center(child: CircularProgressIndicator()))
-              : _urgentReminder != null
-                ? _UrgentBanner(
-                    reminder: _urgentReminder!,
-                    // DELETE /api/v1/events/reminders/
-                    onDismiss: () => _removeReminder(_urgentReminder!))
-                : _error != null
-                  ? Padding(
-                      padding: const EdgeInsets.all(20),
-                      child: Column(children: [
-                        Text(_error!, textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 13, color: EBColors.text3)),
-                        const SizedBox(height: 8),
-                        TextButton.icon(
-                          onPressed: _loadReminders,
-                          icon: const Icon(Icons.refresh_rounded, size: 16),
-                          label: const Text('Retry')),
-                      ]))
-                  : const SizedBox.shrink(),
-          ),
-
-          // ── My RSVPs ───────────────────────────────────
-          SliverToBoxAdapter(
-            child: EBSectionLabel(
-              title: _loadingRsvp
-                ? 'My RSVPs'
-                : 'My RSVPs (${_rsvpEvents.length} Upcoming)')),
-
-          if (_loadingRsvp)
-            const SliverToBoxAdapter(
-              child: Padding(
-                padding: EdgeInsets.symmetric(vertical: 20),
-                child: Center(child: CircularProgressIndicator(
-                  strokeWidth: 2))))
-          else if (_rsvpEvents.isEmpty)
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-                child: Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: EBTheme.cardSm,
-                  child: Center(child: Text("No upcoming RSVPs.",
-                    style: TextStyle(
-                      fontSize: 13, color: EBColors.text3))))))
-          else
-            SliverToBoxAdapter(
-              child: Container(
-                margin: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-                decoration: EBTheme.cardSm,
-                child: Column(
-                  children: _rsvpEvents.map((ev) => _RsvpRow(
-                    event: ev,
-                    // POST/DELETE /api/v1/events/<uuid>/rsvp/
-                    onToggle: () => _toggleRsvp(ev),
-                  )).toList()))),
-
-          // ── Notification settings ──────────────────────
-          SliverToBoxAdapter(
-            child: EBSectionLabel(title: 'Notification Settings')),
-          SliverToBoxAdapter(
-            child: Container(
-              margin: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-              decoration: EBTheme.cardSm,
-              child: Column(children: [
-                EBToggleRow(
-                  label: '⏰ 24-hour reminders',
-                  subtitle: 'Day before event starts',
-                  value: _remind24h,
-                  onChanged: (v) {
-                    setState(() => _remind24h = v);
-                    // PATCH /api/v1/events/reminders/
-                    _updatePref('remind24h', v);
-                  }),
-                Divider(color: EBColors.border, height: 1),
-                EBToggleRow(
-                  label: '⏰ 1-hour reminders',
-                  subtitle: '1 hour before event starts',
-                  value: _remind1h,
-                  onChanged: (v) {
-                    setState(() => _remind1h = v);
-                    _updatePref('remind1h', v);
-                  }),
-                Divider(color: EBColors.border, height: 1),
-                EBToggleRow(
-                  label: '📣 Organiser updates',
-                  subtitle: 'When organiser sends an update',
-                  value: _organiserUp,
-                  onChanged: (v) {
-                    setState(() => _organiserUp = v);
-                    _updatePref('organiserUpdates', v);
-                  }),
-                Divider(color: EBColors.border, height: 1),
-                EBToggleRow(
-                  label: '🆕 New nearby events',
-                  subtitle: 'Events within 1km of campus',
-                  value: _nearby,
-                  onChanged: (v) {
-                    setState(() => _nearby = v);
-                    _updatePref('nearbyEvents', v);
-                  }),
-              ]))),
-
-          // ── Recent notifications feed ──────────────────
-          SliverToBoxAdapter(
-            child: EBSectionLabel(title: 'Recent Notifications')),
-          SliverToBoxAdapter(
-            child: Column(
-              children: _reminders.isEmpty
-                ? [Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Center(child: Text('No recent notifications.',
-                      style: TextStyle(
-                        fontSize: 13, color: EBColors.text3))))]
-                : _reminders.map((r) => _NotifCard(
-                    emoji:  '⏰',
-                    bg:     EBColors.brandPale,
-                    title:  'Reminder: ${r.eventName}',
-                    sub:    r.reminderTime.isNotEmpty
-                              ? '${r.reminderTime} reminder · ${r.meta}'
-                              : r.meta,
-                    unread: _reminders.indexOf(r) == 0,
-                    // DELETE /api/v1/events/reminders/
-                    onDismiss: () => _removeReminder(r),
-                  )).toList())),
-
-          const SliverToBoxAdapter(child: SizedBox(height: 80)),
-        ]),
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-//  URGENT REMINDER BANNER
-// ─────────────────────────────────────────────────────────────
-class _UrgentBanner extends StatelessWidget {
-  final _Reminder reminder;
-  final VoidCallback onDismiss;
-  const _UrgentBanner({required this.reminder, required this.onDismiss});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 14, 16, 12),
-      padding: const EdgeInsets.all(15),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFFFEF3C7), Color(0xFFFDE68A)],
-          begin: Alignment.topLeft, end: Alignment.bottomRight),
-        border: Border.all(color: EBColors.amber, width: 1.5),
-        borderRadius: BorderRadius.circular(18)),
-      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('⏰', style: TextStyle(fontSize: 28)),
-        const SizedBox(width: 12),
-        Expanded(child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Event in 24 hours!', style: TextStyle(
-              fontSize: 13, fontWeight: FontWeight.w800,
-              color: Color(0xFF92400E))),
-            const SizedBox(height: 3),
-            Text(reminder.eventName, style: TextStyle(
-              fontSize: 12, fontWeight: FontWeight.w700,
-              color: EBColors.text)),
-            const SizedBox(height: 2),
-            Text(reminder.meta.isNotEmpty ? reminder.meta : reminder.reminderTime,
-              style: TextStyle(fontSize: 11, color: EBColors.text2)),
-            const SizedBox(height: 9),
-            Row(children: [
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: EBColors.amber,
-                  borderRadius: BorderRadius.circular(9)),
-                child: const Text('View Event', style: TextStyle(
-                  fontSize: 11, fontWeight: FontWeight.w800,
-                  color: Colors.white))),
-              const SizedBox(width: 8),
-              // Dismiss = DELETE /api/v1/events/reminders/
-              GestureDetector(
-                onTap: onDismiss,
-                child: Container(
+              // ── Selected day label ───────────────────────
+              if (!showingFilter)
+                Container(
+                  margin: const EdgeInsets.fromLTRB(16, 0, 16, 10),
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 6),
+                      horizontal: 12, vertical: 9),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF92400E).withOpacity(0.10),
-                    borderRadius: BorderRadius.circular(9)),
-                  child: const Text('Dismiss', style: TextStyle(
-                    fontSize: 11, fontWeight: FontWeight.w800,
-                    color: Color(0xFF92400E))))),
+                      color: EBColors.brandPale,
+                      borderRadius: BorderRadius.circular(12)),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(_dayLabel(_selectedDate), style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                          color: EBColors.brand)),
+                      _loadingDay
+                          ? const SizedBox(
+                              width: 14, height: 14,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: EBColors.brand))
+                          : Text(
+                              '${_dayEvents.length} event${_dayEvents.length != 1 ? "s" : ""}',
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: EBColors.brand)),
+                    ])),
+
+              // ── Filter header ────────────────────────────
+              if (showingFilter)
+                Container(
+                  margin: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 9),
+                  decoration: BoxDecoration(
+                      color: EBColors.brandPale,
+                      borderRadius: BorderRadius.circular(12)),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        _activeFilter.label,
+                        style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w800,
+                            color: EBColors.brand)),
+                      _loadingFilter
+                          ? const SizedBox(
+                              width: 14, height: 14,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: EBColors.brand))
+                          : Text(
+                              '${_filterEvents.length} event${_filterEvents.length != 1 ? "s" : ""}',
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: EBColors.brand)),
+                    ])),
+
+              // ── Day event list ───────────────────────────
+              if (!showingFilter) ...[
+                if (_loadingDay)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24),
+                    child: Center(child: CircularProgressIndicator(
+                        color: EBColors.brand)))
+
+                else if (_dayError != null)
+                  _ErrorRetry(
+                    message: _dayError!,
+                    onRetry: () => _loadDayEvents(_selectedDate))
+
+                else if (_dayEvents.isNotEmpty)
+                  Container(
+                    margin: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                    decoration: EBTheme.cardSm,
+                    child: Column(
+                      children: _dayEvents.map((ev) => _CalEventRow(
+                        event:         ev,
+                        onRsvpTap:     () => _toggleRsvp(ev),
+                        onReminderTap: () => _toggleReminder(ev),
+                        onSaveTap:     () => _toggleSave(ev),
+                      )).toList()))
+
+                else
+                  Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 16),
+                    padding: const EdgeInsets.all(24),
+                    child: Center(child: Text(
+                        'No events on ${_dayLabel(_selectedDate)}',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            fontSize: 13, color: EBColors.text3)))),
+              ],
+
+              // ── Filter event list ────────────────────────
+              if (showingFilter) ...[
+                if (_loadingFilter)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24),
+                    child: Center(child: CircularProgressIndicator(
+                        color: EBColors.brand)))
+
+                else if (_filterError != null)
+                  _ErrorRetry(
+                    message: _filterError!,
+                    onRetry: () => _applyFilter(_activeFilter))
+
+                else if (_filterEvents.isNotEmpty)
+                  Container(
+                    margin: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                    decoration: EBTheme.cardSm,
+                    child: Column(
+                      children: _filterEvents.map((ev) => _CalEventRow(
+                        event:         ev,
+                        onRsvpTap:     () => _toggleRsvp(ev, fromFilter: true),
+                        onReminderTap: () => _toggleReminder(ev, fromFilter: true),
+                        onSaveTap:     () => _toggleSave(ev, fromFilter: true),
+                        showDate: true, // show date label in filter view
+                      )).toList()))
+
+                else
+                  Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 16),
+                    padding: const EdgeInsets.all(24),
+                    child: Center(child: Text(
+                        'No events for ${_activeFilter.label}',
+                        style: const TextStyle(
+                            fontSize: 13, color: EBColors.text3)))),
+              ],
+
+              // ── This-week horizontal strip ───────────────
+              EBSectionLabel(title: '📅 This Week'),
+              SizedBox(
+                height: 70,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  itemCount: _weekStrip.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  itemBuilder: (_, i) {
+                    final dt    = _weekStrip[i];
+                    final d     = dt.day;
+                    final hasEv = dt.month == _displayMonth.month &&
+                                  _eventDays.contains(d);
+                    final isSel = dt.year  == _selectedDate.year  &&
+                                  dt.month == _selectedDate.month &&
+                                  d        == _selectedDate.day;
+                    final isTdy = dt.year  == _today.year  &&
+                                  dt.month == _today.month &&
+                                  d        == _today.day;
+
+                    return GestureDetector(
+                      onTap: () {
+                        // If strip day is in a different month, navigate there
+                        if (dt.month != _displayMonth.month ||
+                            dt.year  != _displayMonth.year) {
+                          setState(() {
+                            _displayMonth = DateTime(dt.year, dt.month, 1);
+                            _eventDays    = {};
+                            _dayEvents    = [];
+                          });
+                          _loadMonthDots();
+                        }
+                        setState(() {
+                          _selectedDate = DateTime(dt.year, dt.month, d);
+                          _activeFilter = _CalFilter.none;
+                          _filterEvents = [];
+                        });
+                        _loadDayEvents(DateTime(dt.year, dt.month, d));
+                      },
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 180),
+                        width: 52,
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: isTdy
+                              ? EBColors.brand.withOpacity(0.15)
+                              : isSel
+                                  ? EBColors.brandPale
+                                  : EBColors.surface3,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: isSel
+                                ? EBColors.brandLight
+                                : isTdy
+                                    ? EBColors.brand.withOpacity(0.4)
+                                    : Colors.transparent,
+                            width: 1.5)),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(_shortWeekday(dt), style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w800,
+                                color: isSel || isTdy
+                                    ? EBColors.brand
+                                    : EBColors.text3)),
+                            Text('$d', style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w900,
+                                color: isSel || isTdy
+                                    ? EBColors.brand
+                                    : EBColors.text2)),
+                            if (hasEv)
+                              Container(
+                                width: 6, height: 6,
+                                margin: const EdgeInsets.only(top: 3),
+                                decoration: BoxDecoration(
+                                  color: isSel
+                                      ? EBColors.brand
+                                      : EBColors.brandLight,
+                                  shape: BoxShape.circle)),
+                          ])));
+                  })),
+
+              const SizedBox(height: 30),
             ]),
-          ])),
-      ]),
+        ),
+      ),
     );
   }
 }
 
 // ─────────────────────────────────────────────────────────────
-//  RSVP ROW  (used in both RSVP screen and Reminders screen)
+//  FILTER TAG CHIP
 // ─────────────────────────────────────────────────────────────
-class _RsvpRow extends StatelessWidget {
-  final _CalEvent event;
-  final VoidCallback onToggle;
-  const _RsvpRow({required this.event, required this.onToggle});
+class _CalFilterTag extends StatelessWidget {
+  final String       label;
+  final bool         active;
+  final VoidCallback onTap;
+  final String       icon;
+
+  const _CalFilterTag({
+    required this.label,
+    required this.active,
+    required this.onTap,
+    this.icon = '',
+  });
 
   @override
-  Widget build(BuildContext context) {
-    final Color goingBg  = event.isRsvped ? EBColors.greenPale  : EBColors.brandPale;
-    final Color goingTxt = event.isRsvped ? EBColors.green      : EBColors.brand;
-    final String dayLbl  = event.dayLabel.isNotEmpty ? event.dayLabel : 'EVT';
-    final String dayNum  = event.day > 0 ? '${event.day}' : '?';
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-      child: Row(children: [
-        // Colour stripe
-        Container(
-          width: 4,
-          margin: const EdgeInsets.only(right: 11),
-          decoration: BoxDecoration(
-            color: event.stripe,
-            borderRadius: BorderRadius.circular(2)),
-          height: 50),
-        // Day badge
-        Container(
-          width: 38,
-          padding: const EdgeInsets.symmetric(vertical: 7),
-          decoration: BoxDecoration(
-            color: goingBg,
-            borderRadius: BorderRadius.circular(10)),
-          child: Column(children: [
-            Text(dayLbl, style: TextStyle(
-              fontSize: 9, fontWeight: FontWeight.w800,
-              color: event.catColor)),
-            Text(dayNum, style: TextStyle(
-              fontSize: 15, fontWeight: FontWeight.w900,
-              color: event.catColor)),
-          ])),
-        const SizedBox(width: 11),
-        Expanded(child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(event.name, style: TextStyle(
-              fontSize: 13, fontWeight: FontWeight.w800,
-              color: EBColors.text)),
-            const SizedBox(height: 2),
-            Text('${event.time}${event.meta.isNotEmpty ? " · ${event.meta}" : ""}${event.hasReminder ? " · ⏰ Reminder set" : ""}',
-              style: TextStyle(fontSize: 11, color: EBColors.text3)),
-            const SizedBox(height: 4),
-            Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 7, vertical: 2),
-              decoration: BoxDecoration(
-                color: goingBg,
-                borderRadius: BorderRadius.circular(7)),
-              child: Text(
-                event.isRsvped ? '✅ Going' : 'Not Going',
-                style: TextStyle(
-                  fontSize: 10, fontWeight: FontWeight.w800,
-                  color: goingTxt))),
-          ])),
-        // POST/DELETE /api/v1/events/<uuid>/rsvp/
-        GestureDetector(
-          onTap: onToggle,
-          child: const Icon(Icons.more_vert,
-            color: EBColors.text3, size: 20)),
-      ]));
-  }
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: onTap,
+    child: AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: active ? EBColors.brand : EBColors.surface3,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: active ? EBColors.brand : EBColors.border,
+          width: 1.2)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon.isNotEmpty) ...[
+            Text(icon, style: const TextStyle(fontSize: 11)),
+            const SizedBox(width: 4),
+          ],
+          Text(label, style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              color: active ? Colors.white : EBColors.text2)),
+        ])));
 }
 
 // ─────────────────────────────────────────────────────────────
 //  CALENDAR EVENT ROW
 // ─────────────────────────────────────────────────────────────
 class _CalEventRow extends StatelessWidget {
-  final _CalEvent event;
+  final _CalEvent    event;
   final VoidCallback onRsvpTap;
   final VoidCallback onReminderTap;
+  final VoidCallback onSaveTap;
+  final bool         showDate; // shows date in filter/range view
+
   const _CalEventRow({
     required this.event,
     required this.onRsvpTap,
     required this.onReminderTap,
+    required this.onSaveTap,
+    this.showDate = false,
   });
 
   @override
@@ -1471,195 +1164,166 @@ class _CalEventRow extends StatelessWidget {
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Container(
-          width: 4, height: 60,
-          margin: const EdgeInsets.only(right: 11),
-          decoration: BoxDecoration(
-            color: event.stripe,
-            borderRadius: BorderRadius.circular(2))),
-        SizedBox(
-          width: 44,
-          child: Text(event.time, style: TextStyle(
-            fontSize: 11, fontWeight: FontWeight.w800,
-            color: EBColors.text3))),
-        Expanded(child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(event.name, style: TextStyle(
-              fontSize: 13, fontWeight: FontWeight.w800,
-              color: EBColors.text)),
-            const SizedBox(height: 2),
-            Text(event.meta, style: TextStyle(
-              fontSize: 11, color: EBColors.text3)),
-            const SizedBox(height: 4),
-            Row(children: [
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 7, vertical: 2),
-                decoration: BoxDecoration(
-                  color: event.catColor.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(7)),
-                child: Text(event.category, style: TextStyle(
-                  fontSize: 10, fontWeight: FontWeight.w800,
-                  color: event.catColor))),
-              const SizedBox(width: 8),
-              Text(attendingStr, style: TextStyle(
-                fontSize: 10, color: EBColors.text3)),
-            ]),
-            const SizedBox(height: 6),
-            Row(children: [
-              // RSVP — POST/DELETE /api/v1/events/<uuid>/rsvp/
-              GestureDetector(
-                onTap: onRsvpTap,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: event.isRsvped
-                      ? EBColors.greenPale : EBColors.brandPale,
-                    borderRadius: BorderRadius.circular(7)),
-                  child: Text(
-                    event.isRsvped ? '✅ Going' : 'RSVP →',
-                    style: TextStyle(
-                      fontSize: 10, fontWeight: FontWeight.w800,
-                      color: event.isRsvped
-                        ? EBColors.green : EBColors.brand)))),
-              const SizedBox(width: 8),
-              // Reminder — POST/DELETE /api/v1/events/reminders/
-              GestureDetector(
-                onTap: onReminderTap,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: event.hasReminder
-                      ? EBColors.amberPale : EBColors.surface3,
-                    borderRadius: BorderRadius.circular(7)),
-                  child: Text(
-                    event.hasReminder ? '🔔 On' : '🔔 Remind',
-                    style: TextStyle(
-                      fontSize: 10, fontWeight: FontWeight.w800,
-                      color: event.hasReminder
-                        ? EBColors.amber : EBColors.text3)))),
-            ]),
-          ])),
-      ]));
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-//  ATTENDEE ROW
-// ─────────────────────────────────────────────────────────────
-class _AttendeeRow extends StatelessWidget {
-  final String emoji, name, sub;
-  final Color color;
-  const _AttendeeRow({
-    required this.emoji, required this.name,
-    required this.sub,   required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      child: Row(children: [
-        Container(
-          width: 34, height: 34,
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [color, color.withOpacity(0.6)]),
-            borderRadius: BorderRadius.circular(11)),
-          child: Center(child: Text(emoji,
-            style: const TextStyle(fontSize: 16)))),
-        const SizedBox(width: 10),
-        Expanded(child: Text(name, style: TextStyle(
-          fontSize: 13, fontWeight: FontWeight.w700, color: EBColors.text))),
-        Text(sub, style: TextStyle(fontSize: 11, color: EBColors.text3)),
-        const SizedBox(width: 8),
-        Text('✓', style: TextStyle(fontSize: 16, color: EBColors.green)),
-      ]));
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-//  NOTIFICATION CARD
-// ─────────────────────────────────────────────────────────────
-class _NotifCard extends StatelessWidget {
-  final String emoji, title, sub;
-  final Color bg;
-  final bool unread;
-  final VoidCallback onDismiss;
-  const _NotifCard({
-    required this.emoji,   required this.bg,
-    required this.title,   required this.sub,
-    required this.unread,  required this.onDismiss,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: unread ? EBColors.brandXp : EBColors.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: unread
-            ? EBColors.brandLight.withOpacity(0.5)
-            : EBColors.border)),
-      child: Row(children: [
-        Container(
-          width: 36, height: 36,
-          decoration: BoxDecoration(
-            color: bg, borderRadius: BorderRadius.circular(10)),
-          child: Center(child: Text(emoji,
-            style: const TextStyle(fontSize: 18)))),
-        const SizedBox(width: 10),
-        Expanded(child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: TextStyle(
-              fontSize: 12,
-              fontWeight: unread ? FontWeight.w800 : FontWeight.w600,
-              color: EBColors.text, height: 1.3)),
-            const SizedBox(height: 2),
-            Text(sub, style: TextStyle(
-              fontSize: 10, color: EBColors.text3)),
-          ])),
-        // DELETE /api/v1/events/reminders/
-        GestureDetector(
-          onTap: onDismiss,
-          child: Container(
-            padding: const EdgeInsets.all(4),
-            child: Icon(Icons.close_rounded,
-              size: 14, color: EBColors.text3))),
-        if (unread)
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Colour stripe
           Container(
-            width: 8, height: 8,
-            margin: const EdgeInsets.only(left: 4),
+            width: 4, height: 60,
+            margin: const EdgeInsets.only(right: 11, top: 2),
             decoration: BoxDecoration(
-              color: EBColors.brand, shape: BoxShape.circle)),
-      ]));
+              color: event.catColor,
+              borderRadius: BorderRadius.circular(2))),
+
+          // Time column
+          SizedBox(
+            width: 44,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(event.time, style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    color: EBColors.text3)),
+                if (showDate && event.startDt != null)
+                  Text(
+                    '${event.startDt!.day}/${event.startDt!.month}',
+                    style: TextStyle(fontSize: 10, color: EBColors.text3)),
+              ])),
+
+          // Details
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Title + save
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Text(event.name, style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                          color: EBColors.text))),
+                    GestureDetector(
+                      onTap: onSaveTap,
+                      child: Text(
+                        event.isSaved ? '❤️' : '🤍',
+                        style: const TextStyle(fontSize: 14))),
+                  ]),
+                const SizedBox(height: 2),
+                Text(event.meta, style: TextStyle(
+                    fontSize: 11, color: EBColors.text3)),
+                const SizedBox(height: 4),
+
+                // Category + attending
+                Row(children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 7, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: event.catColor.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(7)),
+                    child: Text(event.category, style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                        color: event.catColor))),
+                  const SizedBox(width: 8),
+                  Text(attendingStr, style: TextStyle(
+                      fontSize: 10, color: EBColors.text3)),
+                ]),
+                const SizedBox(height: 6),
+
+                // Action buttons
+                Row(children: [
+                  // RSVP
+                  GestureDetector(
+                    onTap: onRsvpTap,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: event.isRsvped
+                            ? EBColors.greenPale
+                            : EBColors.brandPale,
+                        borderRadius: BorderRadius.circular(7)),
+                      child: Text(
+                        event.isRsvped ? '✅ Going' : 'RSVP →',
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w800,
+                            color: event.isRsvped
+                                ? EBColors.green
+                                : EBColors.brand)))),
+                  const SizedBox(width: 8),
+                  // Reminder
+                  GestureDetector(
+                    onTap: onReminderTap,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: event.hasReminder
+                            ? EBColors.amberPale
+                            : EBColors.surface3,
+                        borderRadius: BorderRadius.circular(7)),
+                      child: Text(
+                        event.hasReminder ? '🔔 On' : '🔔 Remind',
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w800,
+                            color: event.hasReminder
+                                ? EBColors.amber
+                                : EBColors.text3)))),
+                ]),
+              ])),
+        ]));
   }
 }
 
 // ─────────────────────────────────────────────────────────────
-//  CALENDAR NAV BUTTON
+//  ERROR + RETRY WIDGET
 // ─────────────────────────────────────────────────────────────
-class _CalBtn extends StatelessWidget {
-  final String label;
-  const _CalBtn(this.label);
+class _ErrorRetry extends StatelessWidget {
+  final String       message;
+  final VoidCallback onRetry;
+  const _ErrorRetry({required this.message, required this.onRetry});
 
   @override
-  Widget build(BuildContext context) => Container(
-    width: 28, height: 28,
-    decoration: BoxDecoration(
-      color: EBColors.brandPale,
-      borderRadius: BorderRadius.circular(8)),
-    child: Center(child: Text(label, style: TextStyle(
-      fontSize: 13, fontWeight: FontWeight.w800,
-      color: EBColors.brand))));
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.all(20),
+    child: Column(children: [
+      Text(message,
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 13, color: EBColors.text3)),
+      const SizedBox(height: 8),
+      TextButton.icon(
+          onPressed: onRetry,
+          icon:  const Icon(Icons.refresh_rounded, size: 16),
+          label: const Text('Retry')),
+    ]));
+}
+
+// ─────────────────────────────────────────────────────────────
+//  NAV BUTTON  (← →)
+// ─────────────────────────────────────────────────────────────
+class _NavBtn extends StatelessWidget {
+  final String       label;
+  final VoidCallback onTap;
+  const _NavBtn({required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: onTap,
+    child: Container(
+      width: 28, height: 28,
+      decoration: BoxDecoration(
+        color: EBColors.brandPale,
+        borderRadius: BorderRadius.circular(8)),
+      child: Center(child: Text(label, style: const TextStyle(
+        fontSize: 13,
+        fontWeight: FontWeight.w800,
+        color: EBColors.brand)))));
 }

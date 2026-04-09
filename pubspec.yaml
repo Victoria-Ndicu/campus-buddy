@@ -16,6 +16,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   
   url_launcher: ^6.2.0
+  qr_flutter: ^4.1.0
 
 
   # ── Firebase ─────────────────────────────────────────────────

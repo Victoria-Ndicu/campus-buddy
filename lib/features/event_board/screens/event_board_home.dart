@@ -8,37 +8,84 @@ import '../../../core/api_client.dart';
 import 'eb_discovery_screen.dart';
 import 'eb_calendar_screen.dart';
 import 'eb_rsvp_screen.dart';
-import 'eb_reminders_screen.dart';
+import 'eb_create_event.dart';
 
 // ─────────────────────────────────────────────────────────────
-//  BASE URL prefix for all event endpoints
-//  urls.py: path("api/v1/events/", include("events.urls"))
+//  API ENDPOINTS
+//  GET  /api/v1/events/               → list all events
+//  POST /api/v1/events/<uuid>/rsvp/   → { status: "going"|"not_going" }
+//  POST /api/v1/events/<uuid>/save/   → save event
+//  DELETE /api/v1/events/<uuid>/save/ → unsave event
 // ─────────────────────────────────────────────────────────────
-//
-//  GET    /api/v1/events/                  → list all events
-//  GET    /api/v1/events/<uuid>/           → event detail
-//  POST   /api/v1/events/uploads/banner/   → upload banner image
-//  POST   /api/v1/events/<uuid>/rsvp/      → RSVP to event
-//  DELETE /api/v1/events/<uuid>/rsvp/      → cancel RSVP
-//  GET    /api/v1/events/reminders/        → list reminders
-//  POST   /api/v1/events/reminders/        → create reminder
-//  POST   /api/v1/events/<uuid>/save/      → save event
-//  DELETE /api/v1/events/<uuid>/save/      → unsave event
-//  POST   /api/v1/events/<uuid>/broadcast/ → broadcast event
+
+// ─────────────────────────────────────────────────────────────
+//  DATE HELPER  (mirrors EBDiscoveryScreen's _DateHelper exactly)
+// ─────────────────────────────────────────────────────────────
+class _DateHelper {
+  static const _months = [
+    '', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+
+  /// Parse ISO 8601 → "Apr 15, 2:00 PM"
+  static String format(String? iso) {
+    if (iso == null || iso.isEmpty) return '';
+    try {
+      final dt = DateTime.parse(iso).toLocal();
+      final h  = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+      final m  = dt.minute.toString().padLeft(2, '0');
+      final s  = dt.hour < 12 ? 'AM' : 'PM';
+      return '${_months[dt.month]} ${dt.day}, $h:$m $s';
+    } catch (_) {
+      return iso ?? '';
+    }
+  }
+
+  /// Format a date range: "Apr 15, 2:00 PM – 4:00 PM"
+  static String formatRange(String? startIso, String? endIso) {
+    final start = format(startIso);
+    if (endIso == null || endIso.isEmpty) return start;
+    try {
+      final dt = DateTime.parse(endIso).toLocal();
+      final h  = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+      final m  = dt.minute.toString().padLeft(2, '0');
+      final s  = dt.hour < 12 ? 'AM' : 'PM';
+      return '$start – $h:$m $s';
+    } catch (_) {
+      return start;
+    }
+  }
+
+  /// Returns true if the event's endAt (or startAt) is in the past.
+  /// Identical to _DateHelper.isPast() in EBDiscoveryScreen.
+  static bool isPast(String? endIso, String? startIso) {
+    final iso = endIso?.isNotEmpty == true ? endIso : startIso;
+    if (iso == null || iso.isEmpty) return false;
+    try {
+      return DateTime.parse(iso).toLocal().isBefore(DateTime.now());
+    } catch (_) {
+      return false;
+    }
+  }
+}
 
 // ─────────────────────────────────────────────────────────────
 //  EVENT MODEL
 // ─────────────────────────────────────────────────────────────
 class EBEvent {
-  final String id;
-  final String title;
-  final String category;
-  final String date;
-  final String location;
-  final String emoji;
-  final int attendingCount;
-  final bool isRsvped;
-  final bool isSaved;
+  final String  id;
+  final String  title;
+  final String  category;
+  final String  date;
+  final String  location;
+  final String  emoji;
+  final String? startAt;
+  final String? endAt;
+  final int     attendingCount;
+  final bool    isRsvped;
+  final bool    isSaved;
+  // Computed once at parse time using the same logic as EBDiscoveryScreen
+  final bool    isPast;
 
   const EBEvent({
     required this.id,
@@ -47,281 +94,215 @@ class EBEvent {
     required this.date,
     required this.location,
     this.emoji          = '🎉',
+    this.startAt,
+    this.endAt,
     this.attendingCount = 0,
     this.isRsvped       = false,
     this.isSaved        = false,
+    this.isPast         = false,
   });
 
-  factory EBEvent.fromJson(Map<String, dynamic> j) => EBEvent(
-    id:             j['id']?.toString()             ?? '',
-    title:          j['title']?.toString()          ?? '',
-    category:       j['category']?.toString()       ?? '',
-    date:           j['date']?.toString()           ?? '',
-    location:       j['location']?.toString()       ?? '',
-    emoji:          j['emoji']?.toString()          ?? '🎉',
-    attendingCount: (j['attendingCount'] as num?)?.toInt() ?? 0,
-    isRsvped:       j['isRsvped']  as bool?         ?? false,
-    isSaved:        j['isSaved']   as bool?         ?? false,
-  );
+  /// Inverse of isPast — mirrors discovery screen's split logic
+  bool get isUpcoming => !isPast;
+
+  factory EBEvent.fromJson(Map<String, dynamic> j) {
+    final userRsvp = j['userRsvp']?.toString() ?? j['user_rsvp']?.toString();
+    final isRsvped = userRsvp == 'going' || userRsvp == 'waitlist'
+        || (j['isRsvped'] as bool? ?? false);
+
+    final attending = (j['rsvpCount']      as num?)?.toInt()
+        ?? (j['rsvp_count']     as num?)?.toInt()
+        ?? (j['attendingCount'] as num?)?.toInt()
+        ?? 0;
+
+    final startAtRaw = j['startAt']?.toString() ?? j['start_at']?.toString();
+    final endAtRaw   = j['endAt']?.toString()   ?? j['end_at']?.toString();
+
+    // Build display date the same way the discovery screen does
+    String dateDisplay = j['date']?.toString() ?? '';
+    if (dateDisplay.isEmpty) {
+      dateDisplay = _DateHelper.formatRange(startAtRaw, endAtRaw);
+    }
+
+    // Use the same isPast logic as EBDiscoveryScreen:
+    // prefer endAt, fall back to startAt
+    final past = _DateHelper.isPast(
+      endAtRaw?.isNotEmpty   == true ? endAtRaw   : null,
+      startAtRaw?.isNotEmpty == true ? startAtRaw : null,
+    );
+
+    return EBEvent(
+      id:             j['id']?.toString()       ?? '',
+      title:          j['title']?.toString()    ?? '',
+      category:       j['category']?.toString() ?? '',
+      date:           dateDisplay,
+      location:       j['location']?.toString() ?? '',
+      emoji:          j['emoji']?.toString()    ?? '🎉',
+      startAt:        startAtRaw,
+      endAt:          endAtRaw,
+      attendingCount: attending,
+      isRsvped:       isRsvped,
+      isSaved:        j['isSaved'] as bool?     ?? false,
+      isPast:         past,
+    );
+  }
+
+  EBEvent copyWith({bool? isRsvped, bool? isSaved, int? attendingCount}) =>
+      EBEvent(
+        id:             id,
+        title:          title,
+        category:       category,
+        date:           date,
+        location:       location,
+        emoji:          emoji,
+        startAt:        startAt,
+        endAt:          endAt,
+        attendingCount: attendingCount ?? this.attendingCount,
+        isRsvped:       isRsvped       ?? this.isRsvped,
+        isSaved:        isSaved        ?? this.isSaved,
+        isPast:         isPast,
+      );
 }
 
 // ─────────────────────────────────────────────────────────────
-//  REMINDER MODEL
-// ─────────────────────────────────────────────────────────────
-class EBReminder {
-  final String id;
-  final String eventId;
-  final String reminderTime;
-
-  const EBReminder({
-    required this.id,
-    required this.eventId,
-    required this.reminderTime,
-  });
-
-  factory EBReminder.fromJson(Map<String, dynamic> j) => EBReminder(
-    id:           j['id']?.toString()           ?? '',
-    eventId:      j['eventId']?.toString()      ?? '',
-    reminderTime: j['reminderTime']?.toString() ?? '',
-  );
-}
-
-// ─────────────────────────────────────────────────────────────
-//  EventBoardHome
+//  HOME SCREEN
 // ─────────────────────────────────────────────────────────────
 class EventBoardHome extends StatefulWidget {
   const EventBoardHome({super.key});
+
   @override
   State<EventBoardHome> createState() => _EventBoardHomeState();
 }
 
 class _EventBoardHomeState extends State<EventBoardHome> {
-  // ── State ─────────────────────────────────────────────────
-  List<EBEvent>    _events       = [];
-  List<EBReminder> _reminders    = [];
-  bool             _loadingEvents    = true;
-  bool             _loadingReminders = true;
-  String?          _eventsError;
+  List<EBEvent> _events      = [];
+  bool          _loading     = true;
+  String?       _error;
+  int           _navSelected = 0;
 
-  // Featured event RSVP is derived from _events once loaded;
-  // used before load as an optimistic toggle placeholder.
-  bool _featuredGoing = false;
-  int  _navSelected   = 0;
-
-  // ── Convenience getters ───────────────────────────────────
-  EBEvent? get _featured =>
-      _events.isNotEmpty ? _events.first : null;
-
+  // Mirrors discovery screen: upcoming sorted ascending by startAt,
+  // past sorted descending by startAt
   List<EBEvent> get _upcoming =>
-      _events.length > 1 ? _events.sublist(1) : [];
+      (_events.where((e) => e.isUpcoming).toList()
+        ..sort((a, b) => (a.startAt ?? '').compareTo(b.startAt ?? '')));
 
-  // ─────────────────────────────────────────────────────────
-  //  LIFECYCLE
-  // ─────────────────────────────────────────────────────────
+  List<EBEvent> get _past =>
+      (_events.where((e) => e.isPast).toList()
+        ..sort((a, b) => (b.startAt ?? '').compareTo(a.startAt ?? '')));
+
   @override
   void initState() {
     super.initState();
     _loadEvents();
-    _loadReminders();
   }
 
   // ─────────────────────────────────────────────────────────
-  //  READ: GET /api/v1/events/
+  //  GET /api/v1/events/
   // ─────────────────────────────────────────────────────────
   Future<void> _loadEvents() async {
-    if (mounted) setState(() { _loadingEvents = true; _eventsError = null; });
+    if (mounted) setState(() { _loading = true; _error = null; });
+
     try {
       final res = await ApiClient.get('/api/v1/events/');
-      dev.log('[EventBoard] GET /events → ${res.statusCode}');
-      dev.log('[EventBoard] body: ${res.body}');
+      dev.log('[Home] GET /events → ${res.statusCode}');
 
       if (!mounted) return;
 
       if (res.statusCode == 200) {
         final decoded = jsonDecode(res.body);
-        // Accept both a bare list and a {results: [...]} paginated wrapper
+        // Support all three response shapes used across the app
         final raw = decoded is List
             ? decoded
-            : (decoded['results'] as List?) ?? [];
+            : (decoded['results'] as List?)
+                ?? (decoded['data']    as List?)
+                ?? [];
 
-        final events = raw
+        final events = (raw as List)
             .whereType<Map<String, dynamic>>()
             .map(EBEvent.fromJson)
             .toList();
 
-        setState(() {
-          _events        = events;
-          _loadingEvents = false;
-          // Sync featured going state with server value
-          if (events.isNotEmpty) _featuredGoing = events.first.isRsvped;
-        });
+        setState(() { _events = events; _loading = false; });
       } else {
         setState(() {
-          _eventsError  = 'Could not load events (${res.statusCode}).';
-          _loadingEvents = false;
+          _error   = 'Could not load events (${res.statusCode}).';
+          _loading = false;
         });
       }
     } catch (e, s) {
-      dev.log('[EventBoard] _loadEvents error: $e', stackTrace: s);
-      if (mounted) {
-        setState(() {
-          _eventsError  = 'Network error. Pull to refresh.';
-          _loadingEvents = false;
-        });
-      }
+      dev.log('[Home] error: $e', stackTrace: s);
+      if (mounted) setState(() {
+        _error   = 'Network error. Pull to refresh.';
+        _loading = false;
+      });
     }
   }
 
   // ─────────────────────────────────────────────────────────
-  //  READ: GET /api/v1/events/reminders/
-  // ─────────────────────────────────────────────────────────
-  Future<void> _loadReminders() async {
-    if (mounted) setState(() => _loadingReminders = true);
-    try {
-      final res = await ApiClient.get('/api/v1/events/reminders/');
-      dev.log('[EventBoard] GET /reminders → ${res.statusCode}');
-
-      if (!mounted) return;
-      if (res.statusCode == 200) {
-        final decoded = jsonDecode(res.body);
-        final raw = decoded is List
-            ? decoded
-            : (decoded['results'] as List?) ?? [];
-
-        setState(() {
-          _reminders        = raw
-              .whereType<Map<String, dynamic>>()
-              .map(EBReminder.fromJson)
-              .toList();
-          _loadingReminders = false;
-        });
-      } else {
-        setState(() => _loadingReminders = false);
-      }
-    } catch (e) {
-      if (mounted) setState(() => _loadingReminders = false);
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────
-  //  UPDATE: RSVP toggle
-  //  POST   /api/v1/events/<uuid>/rsvp/   → RSVP
-  //  DELETE /api/v1/events/<uuid>/rsvp/   → cancel
+  //  POST /api/v1/events/<uuid>/rsvp/
   // ─────────────────────────────────────────────────────────
   Future<void> _toggleRsvp(EBEvent event) async {
-    // Optimistic update
     final wasGoing = event.isRsvped;
-    _updateEventInList(event.id, isRsvped: !wasGoing,
-        attendingDelta: wasGoing ? -1 : 1);
-
-    // Special case: featured event toggle state
-    if (_featured?.id == event.id) {
-      setState(() => _featuredGoing = !wasGoing);
-    }
+    _mutate(event.id, isRsvped: !wasGoing, attendingDelta: wasGoing ? -1 : 1);
 
     try {
-      final res = wasGoing
-          ? await ApiClient.delete('/api/v1/events/${event.id}/rsvp/')
-          : await ApiClient.post('/api/v1/events/${event.id}/rsvp/');
+      final res = await ApiClient.post(
+        '/api/v1/events/${event.id}/rsvp/',
+        body: {'status': wasGoing ? 'not_going' : 'going'},
+      );
+      dev.log('[Home] RSVP ${event.id} → ${res.statusCode}');
 
-      dev.log('[EventBoard] RSVP ${event.id} → ${res.statusCode}');
-
-      if (res.statusCode != 200 && res.statusCode != 201 &&
-          res.statusCode != 204) {
-        // Revert on failure
-        _updateEventInList(event.id, isRsvped: wasGoing,
-            attendingDelta: wasGoing ? 1 : -1);
-        if (_featured?.id == event.id) {
-          setState(() => _featuredGoing = wasGoing);
-        }
-        if (mounted) _snack('Could not update RSVP. Please try again.');
+      final ok = res.statusCode == 200 || res.statusCode == 201;
+      if (!ok) {
+        _mutate(event.id, isRsvped: wasGoing, attendingDelta: wasGoing ? 1 : -1);
+        _snack('Could not update RSVP. Please try again.');
       } else {
-        if (mounted) {
-          _snack(!wasGoing
-              ? "✅ You're going to ${event.title}!"
-              : 'RSVP cancelled');
-        }
+        _snack(wasGoing ? 'RSVP cancelled' : "✅ You're going to ${event.title}!");
       }
     } catch (_) {
-      // Revert on network error
-      _updateEventInList(event.id, isRsvped: wasGoing,
-          attendingDelta: wasGoing ? 1 : -1);
-      if (_featured?.id == event.id) setState(() => _featuredGoing = wasGoing);
-      if (mounted) _snack('Network error. Please try again.');
+      _mutate(event.id, isRsvped: wasGoing, attendingDelta: wasGoing ? 1 : -1);
+      _snack('Network error. Please try again.');
     }
   }
 
   // ─────────────────────────────────────────────────────────
-  //  UPDATE: Save / unsave toggle
-  //  POST   /api/v1/events/<uuid>/save/
-  //  DELETE /api/v1/events/<uuid>/save/
+  //  POST/DELETE /api/v1/events/<uuid>/save/
   // ─────────────────────────────────────────────────────────
   Future<void> _toggleSave(EBEvent event) async {
     final wasSaved = event.isSaved;
-    _updateEventInList(event.id, isSaved: !wasSaved);
+    _mutate(event.id, isSaved: !wasSaved);
 
     try {
       final res = wasSaved
           ? await ApiClient.delete('/api/v1/events/${event.id}/save/')
-          : await ApiClient.post('/api/v1/events/${event.id}/save/');
+          : await ApiClient.post  ('/api/v1/events/${event.id}/save/');
+      dev.log('[Home] Save ${event.id} → ${res.statusCode}');
 
-      dev.log('[EventBoard] Save ${event.id} → ${res.statusCode}');
-
-      if (res.statusCode != 200 && res.statusCode != 201 &&
-          res.statusCode != 204) {
-        _updateEventInList(event.id, isSaved: wasSaved);
-        if (mounted) _snack('Could not save event. Please try again.');
+      final ok = res.statusCode == 200 || res.statusCode == 201 || res.statusCode == 204;
+      if (!ok) {
+        _mutate(event.id, isSaved: wasSaved);
+        _snack('Could not save event.');
       } else {
-        if (mounted) _snack(wasSaved ? 'Event unsaved.' : '🤍 Event saved!');
+        _snack(wasSaved ? 'Event unsaved.' : '❤️ Event saved!');
       }
     } catch (_) {
-      _updateEventInList(event.id, isSaved: wasSaved);
-      if (mounted) _snack('Network error. Please try again.');
+      _mutate(event.id, isSaved: wasSaved);
+      _snack('Network error. Please try again.');
     }
   }
 
   // ─────────────────────────────────────────────────────────
-  //  CREATE: Add a reminder
-  //  POST /api/v1/events/reminders/
+  //  Helpers
   // ─────────────────────────────────────────────────────────
-  Future<void> _addReminder(String eventId, String reminderTime) async {
-    try {
-      final res = await ApiClient.post('/api/v1/events/reminders/', body: {
-        'eventId':      eventId,
-        'reminderTime': reminderTime,
-      });
-      dev.log('[EventBoard] POST /reminders → ${res.statusCode}');
-      if (res.statusCode == 201 || res.statusCode == 200) {
-        await _loadReminders(); // refresh reminder count
-        if (mounted) _snack('🔔 Reminder set!');
-      } else {
-        if (mounted) _snack('Could not set reminder.');
-      }
-    } catch (_) {
-      if (mounted) _snack('Network error. Please try again.');
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────
-  //  Helper: mutate a single event in the list immutably
-  // ─────────────────────────────────────────────────────────
-  void _updateEventInList(String id, {bool? isRsvped, bool? isSaved, int attendingDelta = 0}) {
+  void _mutate(String id, {bool? isRsvped, bool? isSaved, int attendingDelta = 0}) {
     if (!mounted) return;
     setState(() {
-      _events = _events.map((e) {
-        if (e.id != id) return e;
-        return EBEvent(
-          id:             e.id,
-          title:          e.title,
-          category:       e.category,
-          date:           e.date,
-          location:       e.location,
-          emoji:          e.emoji,
-          attendingCount: e.attendingCount + attendingDelta,
-          isRsvped:       isRsvped ?? e.isRsvped,
-          isSaved:        isSaved  ?? e.isSaved,
-        );
-      }).toList();
+      _events = _events.map((e) => e.id == id
+          ? e.copyWith(
+              isRsvped:       isRsvped,
+              isSaved:        isSaved,
+              attendingCount: e.attendingCount + attendingDelta)
+          : e).toList();
     });
   }
 
@@ -330,252 +311,307 @@ class _EventBoardHomeState extends State<EventBoardHome> {
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(SnackBar(
-        content: Text(msg),
+        content:         Text(msg),
         backgroundColor: bg ?? EBColors.brand,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12)),
+        behavior:        SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ));
   }
+
+  void _openCreateEvent() {
+    HapticFeedback.mediumImpact();
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const EBCreateEventScreen()),
+    ).then((_) => _loadEvents());
+  }
+
+  String _greeting() {
+    final h = DateTime.now().hour;
+    if (h < 12) return 'morning';
+    if (h < 17) return 'afternoon';
+    return 'evening';
+  }
+
+  List<_Stat> get _stats => [
+    _Stat('🗓', '${_upcoming.length}',                               'Upcoming'),
+    _Stat('✅', '${_events.where((e) => e.isRsvped).length}',        'My RSVPs'),
+    _Stat('❤️', '${_events.where((e) => e.isSaved).length}',         'Saved'),
+    _Stat('🏷',  '${_events.map((e) => e.category).toSet().length}', 'Categories'),
+  ];
 
   // ─────────────────────────────────────────────────────────
   //  BUILD
   // ─────────────────────────────────────────────────────────
-
-  // Derive stats from live data
-  List<_Stat> get _stats => [
-    _Stat('🗓', '${_events.length}',    'Upcoming'),
-    _Stat('✅', '${_events.where((e) => e.isRsvped).length}', 'My RSVPs'),
-    _Stat('🔔', '${_reminders.length}', 'Reminders'),
-    _Stat('🏷', '${_events.map((e) => e.category).toSet().length}', 'Categories'),
-  ];
-
   @override
   Widget build(BuildContext context) {
     final modules = [
-      _Mod('🗓', 'Browse Events',  '${_events.length} upcoming events',
-          EBColors.brand, EBColors.brandDark, const EBDiscoveryScreen()),
-      _Mod('📅', 'Event Calendar', 'Feb 2026',
-          EBColors.blue, const Color(0xFF4A5FCC), const EBCalendarScreen()),
-      _Mod('🎟', 'My RSVPs', '${_events.where((e) => e.isRsvped).length} confirmed',
-          EBColors.green, const Color(0xFF059669), const EBRsvpScreen()),
-      _Mod('🔔', 'Reminders', '${_reminders.length} upcoming',
-          EBColors.amber, const Color(0xFFD97706), const EBRemindersScreen()),
+      _Mod(
+        emoji:    '🗓',
+        title:    'Browse Events',
+        subtitle: _loading ? 'Loading…' : '${_upcoming.length} upcoming · ${_past.length} past',
+        colorA: EBColors.brand,
+        colorB: EBColors.brandDark,
+        onTap: () {
+          HapticFeedback.mediumImpact();
+          Navigator.push(context,
+            MaterialPageRoute(builder: (_) => const EBDiscoveryScreen()),
+          ).then((_) => _loadEvents());
+        },
+      ),
+      _Mod(
+        emoji:    '📅',
+        title:    'Event Calendar',
+        subtitle: 'View by date',
+        colorA: EBColors.blue,
+        colorB: const Color(0xFF4A5FCC),
+        onTap: () {
+          HapticFeedback.mediumImpact();
+          Navigator.push(context,
+            MaterialPageRoute(builder: (_) => const EBCalendarScreen()));
+        },
+      ),
+      _Mod(
+        emoji:    '🎟',
+        title:    'My RSVPs',
+        subtitle: _loading
+            ? 'Loading…'
+            : '${_events.where((e) => e.isRsvped).length} confirmed',
+        colorA: EBColors.green,
+        colorB: const Color(0xFF059669),
+        onTap: () {
+          HapticFeedback.mediumImpact();
+          Navigator.push(context,
+            MaterialPageRoute(builder: (_) => const EBRsvpScreen(eventId: '')));
+        },
+      ),
+      _Mod(
+        emoji:    '🎉',
+        title:    'Create Event',
+        subtitle: 'Host something new',
+        colorA: EBColors.amber,
+        colorB: const Color(0xFFD97706),
+        onTap:  _openCreateEvent,
+      ),
     ];
 
     return Scaffold(
       backgroundColor: EBColors.surface2,
+
+      appBar: AppBar(
+        backgroundColor: EBColors.surface,
+        elevation:       0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_new, size: 18, color: EBColors.text),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('EventBoard', style: TextStyle(
+              fontFamily: 'serif', fontSize: 18, fontWeight: FontWeight.w900,
+              color: EBColors.brandDark, fontStyle: FontStyle.italic)),
+            Text(
+              _loading
+                  ? 'Loading events…'
+                  : '${_upcoming.length} upcoming · ${_past.length} past',
+              style: TextStyle(fontSize: 11, color: EBColors.text3)),
+          ],
+        ),
+        titleSpacing: 0,
+        actions: [
+          IconButton(
+            tooltip:   'Refresh',
+            onPressed: _loading ? null : _loadEvents,
+            icon: _loading
+                ? const SizedBox(
+                    width: 18, height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: EBColors.brand))
+                : const Icon(Icons.refresh_rounded, color: EBColors.brand, size: 22),
+          ),
+          const SizedBox(width: 4),
+        ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Divider(color: EBColors.border, height: 1)),
+      ),
+
       body: RefreshIndicator(
-        color: EBColors.brand,
-        onRefresh: () async {
-          await Future.wait([_loadEvents(), _loadReminders()]);
-        },
+        color:     EBColors.brand,
+        onRefresh: _loadEvents,
         child: CustomScrollView(slivers: [
 
-          // ── App Bar ──────────────────────────────────────
-          SliverAppBar(
-            expandedHeight: 180,
-            pinned: true,
-            stretch: true,
-            backgroundColor: EBColors.brandDark,
-            leading: IconButton(
-              icon: const Icon(Icons.arrow_back_ios_new,
-                color: Colors.white, size: 18),
-              onPressed: () => Navigator.pop(context),
-            ),
-            flexibleSpace: FlexibleSpaceBar(
-              stretchModes: const [StretchMode.zoomBackground],
-              background: Container(
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [EBColors.brand, EBColors.brandDark],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                ),
-                child: Stack(children: [
-                  Positioned(top: -40, right: -30,
-                    child: Container(width: 160, height: 160,
-                      decoration: BoxDecoration(shape: BoxShape.circle,
-                        color: Colors.white.withOpacity(0.08)))),
-                  Positioned(bottom: 20, left: 16, right: 16,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Text('EventBoard', style: TextStyle(
-                          fontSize: 26, fontWeight: FontWeight.w900,
-                          color: Colors.white, letterSpacing: -0.5)),
-                        const SizedBox(height: 4),
-                        Text(
-                          _loadingEvents
-                            ? 'Loading events…'
-                            : 'University of Nairobi · ${_events.length} upcoming events',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Colors.white.withOpacity(0.75))),
-                        const SizedBox(height: 14),
-                        // Live stat row
-                        Row(
-                          children: _stats.map<Widget>((s) =>
-                            Expanded(child: Column(children: [
-                              _loadingEvents
-                                ? const SizedBox(
-                                    width: 18, height: 18,
-                                    child: CircularProgressIndicator(
-                                      color: Colors.white, strokeWidth: 2))
-                                : Text(s.value, style: const TextStyle(
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.w900,
-                                    color: Colors.white)),
-                              Text(s.label, style: TextStyle(
-                                fontSize: 10,
-                                color: Colors.white.withOpacity(0.65))),
-                            ]))).toList(),
-                        ),
-                      ],
-                    )),
-                ]),
-              ),
-            ),
-            actions: [
-              IconButton(
-                icon: Icon(Icons.notifications_none,
-                  color: Colors.white.withOpacity(0.9)),
-                onPressed: () => Navigator.push(context,
-                  MaterialPageRoute(
-                    builder: (_) => const EBRemindersScreen())),
-              ),
-              const SizedBox(width: 4),
-            ],
-          ),
+          // ── Hero card ─────────────────────────────────────
+          SliverToBoxAdapter(
+            child: Container(
+              margin:  const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [EBColors.brand, EBColors.brandDark],
+                  begin:  Alignment.topLeft,
+                  end:    Alignment.bottomRight),
+                borderRadius: BorderRadius.circular(20)),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Good ${_greeting()} 👋',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.white.withOpacity(0.70))),
+                          const SizedBox(height: 3),
+                          const Text("What's happening\non campus?",
+                            style: TextStyle(
+                              fontSize: 17, fontWeight: FontWeight.w900,
+                              color: Colors.white, height: 1.25)),
+                        ]),
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(14)),
+                        child: const Text('🎓',
+                          style: TextStyle(fontSize: 22))),
+                    ]),
 
-          // ── Module grid ──────────────────────────────────
+                  const SizedBox(height: 14),
+
+                  _loading
+                    ? const SizedBox(
+                        height: 40,
+                        child: Center(child: CircularProgressIndicator(
+                          color: Colors.white, strokeWidth: 2)))
+                    : Row(
+                        children: _stats.map<Widget>((s) => Expanded(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(s.value, style: const TextStyle(
+                                fontSize: 18, fontWeight: FontWeight.w900,
+                                color: Colors.white)),
+                              const SizedBox(height: 2),
+                              Text(s.label, style: TextStyle(
+                                fontSize: 9,
+                                color: Colors.white.withOpacity(0.65))),
+                            ]))).toList()),
+                ]),
+            )),
+
+          // ── Section label ─────────────────────────────────
           SliverToBoxAdapter(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-              child: GridView.count(
-                crossAxisCount: 2, shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                mainAxisSpacing: 12, crossAxisSpacing: 12,
-                childAspectRatio: 1.1,
-                children: modules.map<Widget>((m) => _ModuleCard(
-                  emoji: m.emoji, title: m.title, subtitle: m.subtitle,
-                  colorA: m.colorA, colorB: m.colorB,
-                  onTap: () {
-                    HapticFeedback.mediumImpact();
-                    Navigator.push(context,
-                      MaterialPageRoute(builder: (_) => m.screen));
-                  },
-                )).toList(),
-              ),
-            ),
-          ),
+              padding: const EdgeInsets.fromLTRB(16, 18, 16, 4),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('What do you want to do?',
+                    style: TextStyle(
+                      fontSize: 14, fontWeight: FontWeight.w800,
+                      color: EBColors.text)),
+                  GestureDetector(
+                    onTap: () => Navigator.push(context,
+                      MaterialPageRoute(builder: (_) => const EBDiscoveryScreen()))
+                        .then((_) => _loadEvents()),
+                    child: Text('Browse all →',
+                      style: TextStyle(
+                        fontSize: 12, fontWeight: FontWeight.w700,
+                        color: EBColors.brand))),
+                ]))),
 
-          // ── Loading / error state ────────────────────────
-          if (_loadingEvents)
-            const SliverToBoxAdapter(
+          // ── Module grid ───────────────────────────────────
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: GridView.count(
+                crossAxisCount:   2,
+                shrinkWrap:       true,
+                physics:          const NeverScrollableScrollPhysics(),
+                mainAxisSpacing:  12,
+                crossAxisSpacing: 12,
+                childAspectRatio: 1.15,
+                children: modules.map(_ModuleCard.fromMod).toList()))),
+
+          // ── Upcoming preview ──────────────────────────────
+          if (!_loading && _upcoming.isNotEmpty) ...[
+            SliverToBoxAdapter(
               child: Padding(
-                padding: EdgeInsets.symmetric(vertical: 40),
-                child: Center(child: CircularProgressIndicator()),
-              ),
-            )
-          else if (_eventsError != null)
+                padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Upcoming Events',
+                      style: TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w800,
+                        color: EBColors.text)),
+                    GestureDetector(
+                      onTap: () => Navigator.push(context,
+                        MaterialPageRoute(
+                          builder: (_) => const EBDiscoveryScreen()))
+                            .then((_) => _loadEvents()),
+                      child: Text('See all →',
+                        style: TextStyle(
+                          fontSize: 12, fontWeight: FontWeight.w700,
+                          color: EBColors.brand))),
+                  ]))),
+
+            SliverList(
+              delegate: SliverChildBuilderDelegate(
+                (_, i) {
+                  final ev = _upcoming.take(3).toList()[i];
+                  return _UpcomingEventRow(
+                    event:      ev,
+                    onRsvpTap:  () => _toggleRsvp(ev),
+                    onSaveTap:  () => _toggleSave(ev),
+                  );
+                },
+                childCount: _upcoming.take(3).length,
+              )),
+          ],
+
+          // ── Error state ───────────────────────────────────
+          if (_error != null)
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.all(24),
                 child: Column(children: [
-                  Text(_eventsError!, textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 13, color: EBColors.text3)),
-                  const SizedBox(height: 10),
+                  Text(_error!,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 13, color: EBColors.text3)),
+                  const SizedBox(height: 12),
                   TextButton.icon(
                     onPressed: _loadEvents,
-                    icon: const Icon(Icons.refresh_rounded, size: 16),
-                    label: const Text('Retry'),
-                  ),
-                ]),
-              ),
-            )
-          else ...[
+                    icon:  const Icon(Icons.refresh_rounded, size: 16),
+                    label: const Text('Retry')),
+                ]))),
 
-            // ── Featured event ─────────────────────────────
-            if (_featured != null)
-              SliverToBoxAdapter(
-                child: _FeaturedEventCard(
-                  event: _featured!,
-                  going: _featuredGoing,
-                  // POST /api/v1/events/<uuid>/rsvp/
-                  onRsvpTap: () => _toggleRsvp(_featured!),
-                  // POST /api/v1/events/<uuid>/save/
-                  onSaveTap: () => _toggleSave(_featured!),
-                ),
-              ),
-
-            // ── Upcoming events ────────────────────────────
-            SliverToBoxAdapter(
-              child: EBSectionLabel(
-                title: '🎉 Upcoming Events',
-                action: 'See all →',
-                onAction: () => Navigator.push(context,
-                  MaterialPageRoute(
-                    builder: (_) => const EBDiscoveryScreen())),
-              ),
-            ),
-            SliverList(
-              delegate: SliverChildBuilderDelegate(
-                (ctx, i) {
-                  if (i == _upcoming.length) {
-                    return const SizedBox(height: 100);
-                  }
-                  final ev = _upcoming[i];
-                  return _UpcomingEventCard(
-                    event: ev,
-                    // GET /api/v1/events/<uuid>/ (detail opens RSVP screen)
-                    onTap: () => Navigator.push(context,
-                      MaterialPageRoute(
-                        builder: (_) => EBRsvpScreen(eventId: ev.id))),
-                    // POST/DELETE /api/v1/events/<uuid>/rsvp/
-                    onRsvpTap: () => _toggleRsvp(ev),
-                    // POST/DELETE /api/v1/events/<uuid>/save/
-                    onSaveTap: () => _toggleSave(ev),
-                  );
-                },
-                childCount: _upcoming.length + 1,
-              ),
-            ),
-          ],
+          const SliverToBoxAdapter(child: SizedBox(height: 80)),
         ]),
       ),
 
-      // ── FAB — opens create (banner upload is inside create screen) ──
-      floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: EBColors.brand,
-        foregroundColor: Colors.white,
-        icon: const Text('🎉', style: TextStyle(fontSize: 18)),
-        label: const Text('Create Event',
-          style: TextStyle(fontWeight: FontWeight.w800)),
-        onPressed: () => Navigator.push(context,
-          MaterialPageRoute(builder: (_) => const EBCreateEventScreen())),
-      ),
-
-      // ── Bottom Nav ──────────────────────────────────────
-      bottomNavigationBar: _EBBottomNav(
+      // ── Bottom Nav ────────────────────────────────────────
+      bottomNavigationBar: _BottomNav(
         selected: _navSelected,
         onTap: (i) {
           setState(() => _navSelected = i);
           switch (i) {
             case 1:
-              Navigator.push(context, MaterialPageRoute(
-                builder: (_) => const EBCalendarScreen())); break;
+              Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const EBCalendarScreen()));
+              break;
             case 2:
-              // EBRsvpScreen shows GET /api/v1/events/?rsvped=true
-              Navigator.push(context, MaterialPageRoute(
-                builder: (_) => const EBRsvpScreen())); break;
+              Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const EBRsvpScreen(eventId: '')));
+              break;
             case 3:
-              // EBRemindersScreen shows GET /api/v1/events/reminders/
-              Navigator.push(context, MaterialPageRoute(
-                builder: (_) => const EBRemindersScreen())); break;
+              _openCreateEvent();
+              break;
           }
         },
       ),
@@ -584,140 +620,127 @@ class _EventBoardHomeState extends State<EventBoardHome> {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  DATA CLASSES
+//  UPCOMING EVENT ROW
 // ─────────────────────────────────────────────────────────────
-class _Stat { final String emoji, value, label; const _Stat(this.emoji, this.value, this.label); }
-class _Mod  {
-  final String emoji, title, subtitle;
-  final Color colorA, colorB;
-  final Widget screen;
-  const _Mod(this.emoji, this.title, this.subtitle, this.colorA, this.colorB, this.screen);
-}
-
-// ─────────────────────────────────────────────────────────────
-//  FEATURED EVENT CARD
-//  Wires: POST/DELETE /api/v1/events/<uuid>/rsvp/
-//         POST/DELETE /api/v1/events/<uuid>/save/
-// ─────────────────────────────────────────────────────────────
-class _FeaturedEventCard extends StatelessWidget {
-  final EBEvent event;
-  final bool going;
+class _UpcomingEventRow extends StatelessWidget {
+  final EBEvent      event;
   final VoidCallback onRsvpTap;
   final VoidCallback onSaveTap;
 
-  const _FeaturedEventCard({
+  const _UpcomingEventRow({
     required this.event,
-    required this.going,
     required this.onRsvpTap,
     required this.onSaveTap,
   });
 
+  Color get _catColor {
+    final c = event.category.toLowerCase();
+    if (c.contains('academic') || c.contains('tech')) return EBColors.blue;
+    if (c.contains('sport'))                          return EBColors.green;
+    if (c.contains('career'))                         return EBColors.amber;
+    return EBColors.brand;
+  }
+
+  Color get _catBg {
+    final c = event.category.toLowerCase();
+    if (c.contains('academic') || c.contains('tech')) return const Color(0xFFE3EEFF);
+    if (c.contains('sport'))                          return const Color(0xFFE3FAF0);
+    if (c.contains('career'))                         return const Color(0xFFFFF3E0);
+    return EBColors.brandPale;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.fromLTRB(16, 20, 16, 0),
-      padding: const EdgeInsets.all(18),
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [EBColors.brand, EBColors.brandDark],
-          begin: Alignment.topLeft, end: Alignment.bottomRight),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Stack(children: [
-        Positioned(right: 10, top: 0, bottom: 0,
-          child: Text(event.emoji, style: TextStyle(
-            fontSize: 72, color: Colors.white.withOpacity(0.12)))),
-        Positioned.fill(child: DecoratedBox(decoration: BoxDecoration(
-          gradient: RadialGradient(
-            center: const Alignment(0.7, -0.8), radius: 1.0,
-            colors: [
-              Colors.white.withOpacity(0.12),
-              Colors.transparent,
-            ])))),
-        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('🔥 FEATURED EVENT', style: TextStyle(
-            fontSize: 10, fontWeight: FontWeight.w800,
-            color: Colors.white.withOpacity(0.72), letterSpacing: 1.5)),
-          const SizedBox(height: 6),
-          Text(event.title, style: const TextStyle(
-            fontSize: 18, fontStyle: FontStyle.italic,
-            color: Colors.white, height: 1.3)),
-          const SizedBox(height: 6),
-          Text('📅 ${event.date}  ·  📍 ${event.location}',
-            style: TextStyle(
-              fontSize: 11, color: Colors.white.withOpacity(0.75))),
-          const SizedBox(height: 12),
-          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('+${event.attendingCount} attending',
-                style: TextStyle(
-                  fontSize: 11, color: Colors.white.withOpacity(0.75))),
-            ]),
-            Row(children: [
-              // Save button — POST/DELETE /api/v1/events/<uuid>/save/
-              GestureDetector(
-                onTap: onSaveTap,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  width: 34, height: 34,
-                  margin: const EdgeInsets.only(right: 8),
-                  decoration: BoxDecoration(
-                    color: event.isSaved
-                      ? Colors.white.withOpacity(0.30)
-                      : Colors.white.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: Colors.white.withOpacity(0.35)),
-                  ),
-                  child: Center(
-                    child: Text(event.isSaved ? '🤍' : '🤍',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: event.isSaved
-                          ? Colors.white
-                          : Colors.white.withOpacity(0.7)))),
-                ),
-              ),
-              // RSVP button — POST/DELETE /api/v1/events/<uuid>/rsvp/
-              GestureDetector(
-                onTap: onRsvpTap,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 250),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14, vertical: 7),
-                  decoration: BoxDecoration(
-                    color: going
-                      ? Colors.white.withOpacity(0.35)
-                      : Colors.white.withOpacity(0.18),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: Colors.white.withOpacity(0.35)),
-                  ),
-                  child: Text(going ? '✅ Going' : 'RSVP →',
-                    style: const TextStyle(
-                      fontSize: 12, fontWeight: FontWeight.w800,
-                      color: Colors.white)),
-                ),
-              ),
-            ]),
-          ]),
-        ]),
-      ]),
-    );
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: EBColors.border)),
+      child: Row(
+        children: [
+          Container(
+            width: 42, height: 42,
+            decoration: BoxDecoration(
+              color: _catBg,
+              borderRadius: BorderRadius.circular(11)),
+            child: Center(child: Text(
+              event.emoji.isNotEmpty ? event.emoji : '🎉',
+              style: const TextStyle(fontSize: 20)))),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(event.title, maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w800,
+                    color: EBColors.text)),
+                const SizedBox(height: 2),
+                Text(
+                  '${event.date}${event.location.isNotEmpty ? " · ${event.location}" : ""}',
+                  maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 10, color: EBColors.text3)),
+              ])),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+            decoration: BoxDecoration(
+              color: _catBg,
+              borderRadius: BorderRadius.circular(7)),
+            child: Text(
+              event.category.isNotEmpty ? event.category : 'Event',
+              style: TextStyle(
+                fontSize: 9, fontWeight: FontWeight.w800,
+                color: _catColor))),
+          const SizedBox(width: 6),
+          GestureDetector(
+            onTap: onRsvpTap,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: event.isRsvped ? EBColors.green : EBColors.brand,
+                borderRadius: BorderRadius.circular(9)),
+              child: Text(
+                event.isRsvped ? '✅' : 'RSVP',
+                style: const TextStyle(
+                  fontSize: 10, fontWeight: FontWeight.w800,
+                  color: Colors.white)))),
+        ]));
   }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  DATA HELPERS
+// ─────────────────────────────────────────────────────────────
+class _Stat {
+  final String emoji, value, label;
+  const _Stat(this.emoji, this.value, this.label);
+}
+
+class _Mod {
+  final String       emoji, title, subtitle;
+  final Color        colorA, colorB;
+  final VoidCallback onTap;
+  const _Mod({
+    required this.emoji,
+    required this.title,
+    required this.subtitle,
+    required this.colorA,
+    required this.colorB,
+    required this.onTap,
+  });
 }
 
 // ─────────────────────────────────────────────────────────────
 //  MODULE CARD
 // ─────────────────────────────────────────────────────────────
 class _ModuleCard extends StatelessWidget {
-  final String emoji, title, subtitle;
-  final Color colorA, colorB;
-  final VoidCallback onTap;
-  const _ModuleCard({
-    required this.emoji, required this.title, required this.subtitle,
-    required this.colorA, required this.colorB, required this.onTap,
-  });
+  final _Mod mod;
+  const _ModuleCard(this.mod, {super.key});
+  static _ModuleCard fromMod(_Mod m) => _ModuleCard(m);
 
   @override
   Widget build(BuildContext context) {
@@ -726,41 +749,46 @@ class _ModuleCard extends StatelessWidget {
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          onTap: onTap,
+          onTap:       mod.onTap,
           splashColor: Colors.white.withOpacity(0.15),
           child: Container(
             padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(gradient: LinearGradient(
-              colors: [colorA, colorB],
-              begin: Alignment.topLeft, end: Alignment.bottomRight)),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [mod.colorA, mod.colorB],
+                begin:  Alignment.topLeft,
+                end:    Alignment.bottomRight)),
             child: Stack(children: [
-              Positioned(top: -16, right: -16,
-                child: Container(width: 72, height: 72,
-                  decoration: BoxDecoration(shape: BoxShape.circle,
-                    color: Colors.white.withOpacity(0.1)))),
+              Positioned(
+                top: -18, right: -18,
+                child: Container(
+                  width: 76, height: 76,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.white.withOpacity(0.10)))),
+              Positioned(
+                top: 0, right: 0,
+                child: Container(
+                  width: 26, height: 26,
+                  decoration: BoxDecoration(
+                    color:        Colors.white.withOpacity(0.20),
+                    borderRadius: BorderRadius.circular(8)),
+                  child: const Center(child: Text('›', style: TextStyle(
+                    fontSize: 18, color: Colors.white,
+                    fontWeight: FontWeight.w900))))),
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.end,
+                mainAxisAlignment:  MainAxisAlignment.end,
                 children: [
-                  Text(emoji, style: const TextStyle(fontSize: 30)),
+                  Text(mod.emoji, style: const TextStyle(fontSize: 30)),
                   const SizedBox(height: 6),
-                  Text(title, style: const TextStyle(
+                  Text(mod.title, style: const TextStyle(
                     fontSize: 13, fontWeight: FontWeight.w900,
                     color: Colors.white)),
                   const SizedBox(height: 2),
-                  Text(subtitle, style: TextStyle(
+                  Text(mod.subtitle, style: TextStyle(
                     fontSize: 10, color: Colors.white.withOpacity(0.75))),
-                ],
-              ),
-              Positioned(top: 0, right: 0,
-                child: Container(width: 24, height: 24,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(8)),
-                  child: const Center(child: Text('›',
-                    style: TextStyle(
-                      fontSize: 16, color: Colors.white,
-                      fontWeight: FontWeight.w900))))),
+                ]),
             ]),
           ),
         ),
@@ -770,159 +798,18 @@ class _ModuleCard extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  UPCOMING EVENT CARD
-//  Wires: POST/DELETE /api/v1/events/<uuid>/rsvp/
-//         POST/DELETE /api/v1/events/<uuid>/save/
-//  onTap  → GET /api/v1/events/<uuid>/ (via EBRsvpScreen)
-// ─────────────────────────────────────────────────────────────
-class _UpcomingEventCard extends StatelessWidget {
-  final EBEvent event;
-  final VoidCallback onTap;
-  final VoidCallback onRsvpTap;
-  final VoidCallback onSaveTap;
-
-  const _UpcomingEventCard({
-    required this.event,
-    required this.onTap,
-    required this.onRsvpTap,
-    required this.onSaveTap,
-  });
-
-  // Map category string → colour
-  static Color _catColor(String cat) {
-    final c = cat.toLowerCase();
-    if (c.contains('academic') || c.contains('tech')) return EBColors.blue;
-    if (c.contains('sport'))    return EBColors.green;
-    if (c.contains('cultural') || c.contains('arts')) return EBColors.pink;
-    return EBColors.brand;
-  }
-
-  static Color _gradA(String cat) {
-    final c = cat.toLowerCase();
-    if (c.contains('sport'))    return const Color(0xFFECFDF5);
-    if (c.contains('cultural')) return const Color(0xFFFDF2F8);
-    return const Color(0xFFEDE9FE);
-  }
-
-  static Color _gradB(String cat) {
-    final c = cat.toLowerCase();
-    if (c.contains('sport'))    return const Color(0xFF6EE7B7);
-    if (c.contains('cultural')) return const Color(0xFFFBCFE8);
-    return const Color(0xFFC4B5FD);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final catColor = _catColor(event.category);
-
-    return GestureDetector(
-      onTap: onTap,   // → detail screen which calls GET /api/v1/events/<uuid>/
-      child: Container(
-        margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-        decoration: EBTheme.card,
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // ── Banner ──
-          Container(
-            height: 110,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [_gradA(event.category), _gradB(event.category)],
-                begin: Alignment.topLeft, end: Alignment.bottomRight),
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(18)),
-            ),
-            child: Stack(children: [
-              Center(child: Text(event.emoji,
-                style: const TextStyle(fontSize: 54))),
-              // Category badge
-              Positioned(top: 10, left: 10,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: catColor,
-                    borderRadius: BorderRadius.circular(8)),
-                  child: Text(event.category,
-                    style: const TextStyle(
-                      fontSize: 10, fontWeight: FontWeight.w800,
-                      color: Colors.white)))),
-              // Date badge
-              Positioned(top: 10, right: 48,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.5),
-                    borderRadius: BorderRadius.circular(7)),
-                  child: Text(event.date,
-                    style: const TextStyle(
-                      fontSize: 9, fontWeight: FontWeight.w800,
-                      color: Colors.white)))),
-              // Save button — POST/DELETE /api/v1/events/<uuid>/save/
-              Positioned(top: 8, right: 8,
-                child: GestureDetector(
-                  onTap: onSaveTap,
-                  child: Container(
-                    width: 32, height: 32,
-                    decoration: BoxDecoration(
-                      color: event.isSaved
-                        ? Colors.red.withOpacity(0.85)
-                        : Colors.white.withOpacity(0.9),
-                      shape: BoxShape.circle),
-                    child: Center(child: Text(
-                      event.isSaved ? '❤️' : '🤍',
-                      style: const TextStyle(fontSize: 13)))))),
-            ]),
-          ),
-          // ── Body ──
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(event.title, style: TextStyle(
-                  fontSize: 14, fontWeight: FontWeight.w800,
-                  color: EBColors.text)),
-                const SizedBox(height: 3),
-                Text('📍 ${event.location}', style: TextStyle(
-                  fontSize: 11, color: EBColors.text3)),
-                const SizedBox(height: 8),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('${event.attendingCount} attending',
-                      style: TextStyle(
-                        fontSize: 11, color: EBColors.text3)),
-                    // RSVP button — POST/DELETE /api/v1/events/<uuid>/rsvp/
-                    EBRsvpButton(
-                      going: event.isRsvped,
-                      color: catColor,
-                      onTap: onRsvpTap,
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ]),
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
 //  BOTTOM NAV
 // ─────────────────────────────────────────────────────────────
-class _EBBottomNav extends StatelessWidget {
-  final int selected;
+class _BottomNav extends StatelessWidget {
+  final int               selected;
   final ValueChanged<int> onTap;
-  const _EBBottomNav({required this.selected, required this.onTap});
+  const _BottomNav({required this.selected, required this.onTap});
 
   static const _items = [
     ('🗓', 'Events'),
     ('📅', 'Calendar'),
     ('🎟', 'My RSVPs'),
-    ('🔔', 'Alerts'),
+    ('🎉', 'Create'),
     ('👤', 'Profile'),
   ];
 
@@ -931,6 +818,9 @@ class _EBBottomNav extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
+        boxShadow: [BoxShadow(
+          color: Colors.black.withOpacity(0.06),
+          blurRadius: 12, offset: const Offset(0, -3))],
         border: Border(top: BorderSide(color: EBColors.border))),
       padding: EdgeInsets.only(
         top: 10,
@@ -943,25 +833,21 @@ class _EBBottomNav extends StatelessWidget {
             onTap: () { HapticFeedback.selectionClick(); onTap(i); },
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 200),
-              padding: const EdgeInsets.symmetric(
-                horizontal: 10, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
                 color: active
-                  ? EBColors.brand.withOpacity(0.10)
-                  : Colors.transparent,
+                    ? EBColors.brand.withOpacity(0.10)
+                    : Colors.transparent,
                 borderRadius: BorderRadius.circular(12)),
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                Text(_items[i].$1,
-                  style: const TextStyle(fontSize: 20)),
-                const SizedBox(height: 3),
-                Text(_items[i].$2, style: TextStyle(
-                  fontSize: 9, fontWeight: FontWeight.w700,
-                  color: active ? EBColors.brand : EBColors.text3)),
-              ]),
-            ),
-          );
-        }),
-      ),
-    );
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(_items[i].$1, style: const TextStyle(fontSize: 20)),
+                  const SizedBox(height: 3),
+                  Text(_items[i].$2, style: TextStyle(
+                    fontSize: 9, fontWeight: FontWeight.w700,
+                    color: active ? EBColors.brand : EBColors.text3)),
+                ])));
+        })));
   }
 }

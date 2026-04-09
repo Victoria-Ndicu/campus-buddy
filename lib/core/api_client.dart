@@ -7,6 +7,10 @@
 //
 //  For public endpoints (login, signup, reset password):
 //    final res = await ApiClient.post('/api/v1/auth/login/', body: {...}, requiresAuth: false);
+//
+//  For file uploads:
+//    final res = await ApiClient.uploadMultipart('/api/v1/events/uploads/banner/', 
+//      files: [await http.MultipartFile.fromPath('banner', imageFile.path)]);
 // ============================================================
 
 import 'dart:convert';
@@ -44,6 +48,14 @@ class ApiClient {
     final p = await SharedPreferences.getInstance();
     await p.remove(_kAccess);
     await p.remove(_kRefresh);
+  }
+
+  // ── Get base URL (public getter) ─────────────────────────
+  static String get baseUrl => _baseUrl;
+
+  // ── Get access token (public method) ─────────────────────
+  static Future<String> getAccessToken() async {
+    return await _accessToken();
   }
 
   // ── Build headers — auth header skipped for public routes ──
@@ -152,4 +164,65 @@ class ApiClient {
         ),
         requiresAuth: requiresAuth,
       );
+
+  // ── Multipart upload support (for file uploads) ────────────
+  static Future<http.Response> uploadMultipart(
+    String path, {
+    required List<http.MultipartFile> files,
+    Map<String, String>? fields,
+    bool requiresAuth = true,
+  }) async {
+    final uri = Uri.parse('$_baseUrl$path');
+    final request = http.MultipartRequest('POST', uri);
+    
+    // Add auth token if required
+    if (requiresAuth) {
+      final token = await _accessToken();
+      if (token.isNotEmpty) {
+        request.headers['Authorization'] = 'Bearer $token';
+      }
+    }
+    
+    // Add files
+    request.files.addAll(files);
+    
+    // Add fields
+    if (fields != null) {
+      request.fields.addAll(fields);
+    }
+    
+    final streamedResponse = await request.send();
+    return await http.Response.fromStream(streamedResponse);
+  }
+
+  // ── Multipart PUT/PATCH support (for updating files) ───────
+  static Future<http.Response> uploadMultipartWithMethod(
+    String path, {
+    required String method, // 'PUT', 'PATCH', etc.
+    required List<http.MultipartFile> files,
+    Map<String, String>? fields,
+    bool requiresAuth = true,
+  }) async {
+    final uri = Uri.parse('$_baseUrl$path');
+    final request = http.MultipartRequest(method, uri);
+    
+    // Add auth token if required
+    if (requiresAuth) {
+      final token = await _accessToken();
+      if (token.isNotEmpty) {
+        request.headers['Authorization'] = 'Bearer $token';
+      }
+    }
+    
+    // Add files
+    request.files.addAll(files);
+    
+    // Add fields
+    if (fields != null) {
+      request.fields.addAll(fields);
+    }
+    
+    final streamedResponse = await request.send();
+    return await http.Response.fromStream(streamedResponse);
+  }
 }
