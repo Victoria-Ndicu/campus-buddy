@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 import '../widgets/au_widgets.dart';
 import 'auth_check_mail_screen.dart';
 
-const _baseUrl = 'https://campusbuddybackend-production.up.railway.app';
+const _baseUrl = 'https://campusbuddybackend-production-3d8a.up.railway.app';
 
 class AuthResetScreen extends StatefulWidget {
   const AuthResetScreen({super.key});

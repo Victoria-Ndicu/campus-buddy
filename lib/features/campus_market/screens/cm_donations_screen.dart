@@ -1,6 +1,7 @@
 // campus_market/screens/cm_donations_screen.dart
 import 'dart:convert';
 import 'dart:developer' as dev;
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/cm_constants.dart';
@@ -11,22 +12,89 @@ import 'cm_post_screen.dart';
 // ─────────────────────────────────────────────────────────────
 //  API ENDPOINTS  (all under /api/v1/market/)
 //
-//  GET    /api/v1/market/listings/?isFree=true&category=<cat>&search=<q>
-//                                                           → donation listings
-//  GET    /api/v1/market/listings/<uuid>/                   → donation detail
-//  POST   /api/v1/market/donations/<uuid>/claim/            → submit claim
-//  GET    /api/v1/market/donations/<uuid>/claims/<uuid>/    → claim status
-//  PATCH  /api/v1/market/donations/<uuid>/claims/<uuid>/    → approve / reject
+//  GET    /api/v1/market/listings/?listing_type=donation      → donations only
+//  GET    /api/v1/market/listings/?listing_type=donation
+//                                 &category=<cat>&search=<q>  → filtered
+//  GET    /api/v1/market/listings/<uuid>/                      → detail
+//  POST   /api/v1/market/donations/<uuid>/claim/              → submit claim
+//  GET    /api/v1/market/donations/<uuid>/claims/<uuid>/      → claim status
+//  PATCH  /api/v1/market/donations/<uuid>/claims/<uuid>/      → approve / reject
 // ─────────────────────────────────────────────────────────────
-
-// NOTE: CMListing, CMStats, CMMessage, CMReview are all imported
-//       from ../models/cm_constants.dart — do NOT redefine them here.
 
 const _kDonationFilters = ['All', 'Books', 'Electronics', 'Clothing', 'Other'];
 
 // ─────────────────────────────────────────────────────────────
-//  SCREEN 1: DONATIONS BROWSE
-//  GET /api/v1/market/listings/?isFree=true&category=<cat>&search=<q>
+//  IMAGE HELPER — decode a data-URI to raw bytes
+// ─────────────────────────────────────────────────────────────
+Uint8List? _decodeDataUri(String uri) {
+  try {
+    final comma = uri.indexOf(',');
+    if (comma == -1) return null;
+    return base64Decode(uri.substring(comma + 1));
+  } catch (_) {
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  DONATION IMAGE WIDGET
+//  Shows the first real photo; falls back to gradient + emoji.
+// ─────────────────────────────────────────────────────────────
+class _DonationImage extends StatelessWidget {
+  final CMListing listing;
+  final double    height;
+  final double    width;
+  final BorderRadius? borderRadius;
+
+  const _DonationImage({
+    required this.listing,
+    required this.height,
+    this.width        = double.infinity,
+    this.borderRadius,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final urls = listing.imageUrls;
+    if (urls.isNotEmpty) {
+      final bytes = _decodeDataUri(urls.first);
+      if (bytes != null) {
+        final img = Image.memory(
+          bytes,
+          height: height,
+          width:  width,
+          fit:    BoxFit.cover,
+          gaplessPlayback: true,
+          errorBuilder: (_, __, ___) => _fallback(),
+        );
+        return borderRadius != null
+            ? ClipRRect(borderRadius: borderRadius!, child: img)
+            : img;
+      }
+    }
+    return _fallback();
+  }
+
+  Widget _fallback() => Container(
+    height:      height,
+    width:       width,
+    decoration: BoxDecoration(
+      gradient: LinearGradient(
+        begin: Alignment.topLeft,
+        end:   Alignment.bottomRight,
+        colors: [listing.gradA, listing.gradB],
+      ),
+      borderRadius: borderRadius,
+    ),
+    child: Center(
+      child: Text(listing.emoji,
+        style: TextStyle(fontSize: height * 0.40))),
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+//  SCREEN 1: DONATIONS BROWSE  (listing_type = donation)
+//  GET /api/v1/market/listings/?listing_type=donation&category=<cat>&search=<q>
 // ─────────────────────────────────────────────────────────────
 class CMDonationsScreen extends StatefulWidget {
   const CMDonationsScreen({super.key});
@@ -51,21 +119,22 @@ class _CMDonationsScreenState extends State<CMDonationsScreen> {
   }
 
   // ─────────────────────────────────────────────────────────
-  //  READ: GET /api/v1/market/listings/?isFree=true&...
+  //  READ: GET /api/v1/market/listings/?listing_type=donation
   // ─────────────────────────────────────────────────────────
   Future<void> _loadDonations() async {
     if (mounted) setState(() { _loading = true; _error = null; });
 
-    final params = <String>['isFree=true'];
+    // Always scope to donation listings only
+    final params = <String>['listing_type=donation'];
     final cat = _kDonationFilters[_filter];
-    if (cat != 'All') params.add('category=$cat');
+    if (cat != 'All') params.add('category=${Uri.encodeComponent(cat)}');
     if (_query.isNotEmpty) params.add('search=${Uri.encodeComponent(_query)}');
     final qs = '?${params.join('&')}';
 
     try {
       final res = await ApiClient.get('/api/v1/market/listings/$qs');
       dev.log('[Donations] GET /listings$qs → ${res.statusCode}');
-      dev.log('[Donations] body: ${res.body}');
+      dev.log('[Donations] body snippet: ${res.body.length > 200 ? res.body.substring(0, 200) : res.body}');
 
       if (!mounted) return;
 
@@ -79,6 +148,8 @@ class _CMDonationsScreenState extends State<CMDonationsScreen> {
           _donations = raw
               .whereType<Map<String, dynamic>>()
               .map(CMListing.fromJson)
+              // extra client-side guard: only donation type
+              .where((l) => l.listingType == 'donation')
               .toList();
           _loading = false;
         });
@@ -123,8 +194,9 @@ class _CMDonationsScreenState extends State<CMDonationsScreen> {
                 onPressed: () => Navigator.push(context,
                   MaterialPageRoute(
                     builder: (_) => const CMCreateListingScreen(
-                      type: 'Donate for Free'))).then(
-                  (_) => _loadDonations()),
+                      displayType: 'Donate for Free',
+                      listingType: 'donation',
+                    ))).then((_) => _loadDonations()),
                 icon: const Icon(Icons.add_rounded,
                   color: Colors.white, size: 18),
                 label: const Text('Donate',
@@ -265,8 +337,9 @@ class _CMDonationsScreenState extends State<CMDonationsScreen> {
               onTap: () => Navigator.push(context,
                 MaterialPageRoute(
                   builder: (_) => const CMCreateListingScreen(
-                    type: 'Donate for Free'))).then(
-                (_) => _loadDonations()),
+                    displayType: 'Donate for Free',
+                    listingType: 'donation',
+                  ))).then((_) => _loadDonations()),
             )),
 
           const SliverToBoxAdapter(child: SizedBox(height: 40)),
@@ -301,6 +374,7 @@ class _CMDonationDetailScreenState extends State<CMDonationDetailScreen> {
   bool       _loading  = true;
   String?    _error;
   bool       _claiming = false;
+  int        _imageIndex = 0;
 
   @override
   void initState() {
@@ -328,9 +402,10 @@ class _CMDonationDetailScreenState extends State<CMDonationDetailScreen> {
         final decoded = jsonDecode(res.body);
         if (decoded is Map<String, dynamic>) {
           setState(() {
-            _listing = CMListing.fromJson(decoded);
-            _loading = false;
-            _error   = null;
+            _listing    = CMListing.fromJson(decoded);
+            _loading    = false;
+            _error      = null;
+            _imageIndex = 0;
           });
         }
       } else if (_listing == null) {
@@ -351,10 +426,8 @@ class _CMDonationDetailScreenState extends State<CMDonationDetailScreen> {
   }
 
   // ─────────────────────────────────────────────────────────
-  //  CREATE CLAIM
+  //  CREATE CLAIM → delegates to CMDonationClaimScreen
   //  POST /api/v1/market/donations/<uuid>/claim/
-  //  Delegates to CMDonationClaimScreen which handles the POST
-  //  and returns { claim_id, ... } on success.
   // ─────────────────────────────────────────────────────────
   Future<void> _claimItem() async {
     HapticFeedback.mediumImpact();
@@ -442,20 +515,33 @@ class _CMDonationDetailScreenState extends State<CMDonationDetailScreen> {
         : SingleChildScrollView(
             child: Column(children: [
 
-              // ── Hero banner ───────────────────────
-              Container(
-                height: 220,
-                width: double.infinity,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [l.gradA, l.gradB],
-                  ),
-                ),
+              // ── Hero photo/banner ─────────────────
+              SizedBox(
+                height: 240,
+                width:  double.infinity,
                 child: Stack(children: [
-                  Center(child: Text(l.emoji,
-                    style: const TextStyle(fontSize: 90))),
+                  // Swipeable if multiple photos
+                  l.imageUrls.length > 1
+                    ? PageView.builder(
+                        itemCount: l.imageUrls.length,
+                        onPageChanged: (i) =>
+                            setState(() => _imageIndex = i),
+                        itemBuilder: (_, i) {
+                          final bytes = _decodeDataUri(l.imageUrls[i]);
+                          if (bytes == null) {
+                            return _donationFallback(l);
+                          }
+                          return Image.memory(bytes,
+                            fit:    BoxFit.cover,
+                            width:  double.infinity,
+                            height: 240,
+                            gaplessPlayback: true,
+                            errorBuilder: (_, __, ___) =>
+                                _donationFallback(l));
+                        })
+                    : _DonationImage(listing: l, height: 240),
+
+                  // FREE badge
                   Positioned(
                     top: 16, left: 16,
                     child: Container(
@@ -467,6 +553,25 @@ class _CMDonationDetailScreenState extends State<CMDonationDetailScreen> {
                       child: const Text('🎁 FREE', style: TextStyle(
                         fontSize: 12, fontWeight: FontWeight.w900,
                         color: Colors.white)))),
+
+                  // Dot indicators (multiple photos)
+                  if (l.imageUrls.length > 1)
+                    Positioned(
+                      bottom: 10, left: 0, right: 0,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: List.generate(l.imageUrls.length, (i) =>
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            margin: const EdgeInsets.symmetric(horizontal: 3),
+                            width:  _imageIndex == i ? 16 : 6,
+                            height: 6,
+                            decoration: BoxDecoration(
+                              color: _imageIndex == i
+                                  ? Colors.white
+                                  : Colors.white.withOpacity(0.5),
+                              borderRadius: BorderRadius.circular(3)),
+                          )))),
                 ]),
               ),
 
@@ -529,7 +634,6 @@ class _CMDonationDetailScreenState extends State<CMDonationDetailScreen> {
                     const SizedBox(height: 24),
 
                     // ── Claim CTA ─────────────────────
-                    // → POST /api/v1/market/donations/<uuid>/claim/
                     GestureDetector(
                       onTap: _claiming ? null : _claimItem,
                       child: Container(
@@ -562,13 +666,22 @@ class _CMDonationDetailScreenState extends State<CMDonationDetailScreen> {
           ),
     );
   }
+
+  Widget _donationFallback(CMListing l) => Container(
+    height: 240, width: double.infinity,
+    decoration: BoxDecoration(
+      gradient: LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [l.gradA, l.gradB])),
+    child: Center(child: Text(l.emoji,
+      style: const TextStyle(fontSize: 90))));
 }
 
 // ─────────────────────────────────────────────────────────────
 //  PRIVATE WIDGETS
 // ─────────────────────────────────────────────────────────────
 
-/// Green-tinted filter chip used only in the donations flow.
 class _GreenChip extends StatelessWidget {
   final String     label;
   final bool       active;
@@ -595,7 +708,6 @@ class _GreenChip extends StatelessWidget {
   }
 }
 
-/// Small green category/status badge.
 class _GreenTag extends StatelessWidget {
   final String label;
   const _GreenTag(this.label);
@@ -614,7 +726,7 @@ class _GreenTag extends StatelessWidget {
   }
 }
 
-/// Row card shown in the browse list.
+// Row card in the browse list — thumbnail uses real photo
 class _DonationCard extends StatelessWidget {
   final CMListing   donation;
   final VoidCallback onTap;
@@ -636,18 +748,18 @@ class _DonationCard extends StatelessWidget {
             blurRadius: 8, offset: const Offset(0, 2))]),
         child: Row(children: [
 
-          // Gradient emoji thumbnail
-          Container(
-            width: 88, height: 88,
-            decoration: BoxDecoration(
+          // Thumbnail — real photo or gradient fallback
+          ClipRRect(
+            borderRadius: const BorderRadius.horizontal(
+              left: Radius.circular(16)),
+            child: _DonationImage(
+              listing:      d,
+              height:       88,
+              width:        88,
               borderRadius: const BorderRadius.horizontal(
                 left: Radius.circular(16)),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [d.gradA, d.gradB])),
-            child: Center(child: Text(d.emoji,
-              style: const TextStyle(fontSize: 38)))),
+            ),
+          ),
 
           // Info
           Expanded(
@@ -696,7 +808,6 @@ class _DonationCard extends StatelessWidget {
   }
 }
 
-/// Bottom CTA banner encouraging users to donate.
 class _DonateBanner extends StatelessWidget {
   final VoidCallback onTap;
   const _DonateBanner({required this.onTap});

@@ -9,15 +9,16 @@
 //    final res = await ApiClient.post('/api/v1/auth/login/', body: {...}, requiresAuth: false);
 //
 //  For file uploads:
-//    final res = await ApiClient.uploadMultipart('/api/v1/events/uploads/banner/', 
+//    final res = await ApiClient.uploadMultipart('/api/v1/events/uploads/banner/',
 //      files: [await http.MultipartFile.fromPath('banner', imageFile.path)]);
 // ============================================================
 
 import 'dart:convert';
+import 'dart:developer' as dev;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-const _baseUrl = 'https://campusbuddybackend-production.up.railway.app';
+const _baseUrl = 'https://campusbuddybackend-production-3d8a.up.railway.app';
 
 class ApiClient {
   ApiClient._();
@@ -37,10 +38,34 @@ class ApiClient {
   }
 
   // ── Save tokens after login / refresh ─────────────────────
+  //
+  //  Call this after login AND after any manual token parse.
+  //  Accepts both SimpleJWT snake_case keys ('access', 'refresh')
+  //  and legacy camelCase keys ('accessToken', 'refreshToken').
+  //
+  //  Convenience helper — parse a raw auth response body and save:
+  //    await ApiClient.saveTokensFromJson(jsonDecode(res.body));
   static Future<void> saveTokens(String access, String refresh) async {
     final p = await SharedPreferences.getInstance();
     await p.setString(_kAccess,  access);
     await p.setString(_kRefresh, refresh);
+  }
+
+  static Future<void> saveTokensFromJson(Map<String, dynamic> json) async {
+    // SimpleJWT returns 'access' / 'refresh' (snake_case).
+    // Fall back to camelCase in case the backend wraps them.
+    final access  = json['access']       as String?
+                 ?? json['accessToken']  as String?
+                 ?? '';
+    final refresh = json['refresh']      as String?
+                 ?? json['refreshToken'] as String?
+                 ?? '';
+
+    if (access.isEmpty) {
+      dev.log('[ApiClient] saveTokensFromJson: no access token found in ${ json.keys.toList()}');
+      return;
+    }
+    await saveTokens(access, refresh);
   }
 
   // ── Clear tokens (force re-login) ─────────────────────────
@@ -50,15 +75,12 @@ class ApiClient {
     await p.remove(_kRefresh);
   }
 
-  // ── Get base URL (public getter) ─────────────────────────
+  // ── Public getters ─────────────────────────────────────────
   static String get baseUrl => _baseUrl;
 
-  // ── Get access token (public method) ─────────────────────
-  static Future<String> getAccessToken() async {
-    return await _accessToken();
-  }
+  static Future<String> getAccessToken() async => _accessToken();
 
-  // ── Build headers — auth header skipped for public routes ──
+  // ── Build headers ──────────────────────────────────────────
   static Future<Map<String, String>> _headers({bool requiresAuth = true}) async {
     final headers = <String, String>{'Content-Type': 'application/json'};
     if (requiresAuth) {
@@ -69,6 +91,12 @@ class ApiClient {
   }
 
   // ── Silent token refresh ───────────────────────────────────
+  //
+  //  FIX: SimpleJWT returns snake_case keys ('access', 'refresh').
+  //  The old code looked for 'accessToken' / 'refreshToken', which
+  //  always resolved to null → newAccess was always '' → clearTokens()
+  //  was called silently → every request after expiry lost its auth
+  //  header → 404 on protected endpoints.
   static Future<bool> refresh() async {
     final token = await _refreshToken();
     if (token.isEmpty) return false;
@@ -80,34 +108,48 @@ class ApiClient {
         body: jsonEncode({'refresh': token}),
       );
 
+      dev.log('[ApiClient] refresh → ${res.statusCode}');
+
       if (res.statusCode == 200) {
-        final j          = jsonDecode(res.body) as Map<String, dynamic>;
-        final newAccess  = j['accessToken']  as String? ?? '';
-        final newRefresh = j['refreshToken'] as String? ?? token;
+        final j = jsonDecode(res.body) as Map<String, dynamic>;
+
+        dev.log('[ApiClient] refresh keys: ${j.keys.toList()}');
+
+        // Accept both key formats
+        final newAccess  = j['access']       as String?
+                        ?? j['accessToken']  as String?
+                        ?? '';
+        final newRefresh = j['refresh']      as String?
+                        ?? j['refreshToken'] as String?
+                        ?? token; // keep old refresh if server doesn't rotate
+
         if (newAccess.isNotEmpty) {
           await saveTokens(newAccess, newRefresh);
+          dev.log('[ApiClient] token refreshed successfully');
           return true;
         }
+
+        dev.log('[ApiClient] refresh: access token missing in response');
       }
-    } catch (_) {}
+    } catch (e) {
+      dev.log('[ApiClient] refresh error: $e');
+    }
 
     await clearTokens();
     return false;
   }
 
   // ── Core executor: send → 401 → refresh → retry once ──────
-  // Only runs the refresh/retry logic for authenticated requests
   static Future<http.Response> _send(
     Future<http.Response> Function(Map<String, String> h) fn, {
     bool requiresAuth = true,
   }) async {
     final res = await fn(await _headers(requiresAuth: requiresAuth));
 
-    // Don't attempt refresh for public endpoints
     if (!requiresAuth || res.statusCode != 401) return res;
 
     final ok = await refresh();
-    if (!ok) return res; // still 401 — caller navigates to login
+    if (!ok) return res; // still 401 — caller should navigate to login
 
     return fn(await _headers(requiresAuth: true)); // retry with new token
   }
@@ -165,64 +207,48 @@ class ApiClient {
         requiresAuth: requiresAuth,
       );
 
-  // ── Multipart upload support (for file uploads) ────────────
+  // ── Multipart upload (POST) ────────────────────────────────
   static Future<http.Response> uploadMultipart(
     String path, {
     required List<http.MultipartFile> files,
     Map<String, String>? fields,
     bool requiresAuth = true,
   }) async {
-    final uri = Uri.parse('$_baseUrl$path');
+    final uri     = Uri.parse('$_baseUrl$path');
     final request = http.MultipartRequest('POST', uri);
-    
-    // Add auth token if required
+
     if (requiresAuth) {
       final token = await _accessToken();
-      if (token.isNotEmpty) {
-        request.headers['Authorization'] = 'Bearer $token';
-      }
+      if (token.isNotEmpty) request.headers['Authorization'] = 'Bearer $token';
     }
-    
-    // Add files
+
     request.files.addAll(files);
-    
-    // Add fields
-    if (fields != null) {
-      request.fields.addAll(fields);
-    }
-    
-    final streamedResponse = await request.send();
-    return await http.Response.fromStream(streamedResponse);
+    if (fields != null) request.fields.addAll(fields);
+
+    final streamed = await request.send();
+    return http.Response.fromStream(streamed);
   }
 
-  // ── Multipart PUT/PATCH support (for updating files) ───────
+  // ── Multipart PUT / PATCH ──────────────────────────────────
   static Future<http.Response> uploadMultipartWithMethod(
     String path, {
-    required String method, // 'PUT', 'PATCH', etc.
+    required String method,
     required List<http.MultipartFile> files,
     Map<String, String>? fields,
     bool requiresAuth = true,
   }) async {
-    final uri = Uri.parse('$_baseUrl$path');
+    final uri     = Uri.parse('$_baseUrl$path');
     final request = http.MultipartRequest(method, uri);
-    
-    // Add auth token if required
+
     if (requiresAuth) {
       final token = await _accessToken();
-      if (token.isNotEmpty) {
-        request.headers['Authorization'] = 'Bearer $token';
-      }
+      if (token.isNotEmpty) request.headers['Authorization'] = 'Bearer $token';
     }
-    
-    // Add files
+
     request.files.addAll(files);
-    
-    // Add fields
-    if (fields != null) {
-      request.fields.addAll(fields);
-    }
-    
-    final streamedResponse = await request.send();
-    return await http.Response.fromStream(streamedResponse);
+    if (fields != null) request.fields.addAll(fields);
+
+    final streamed = await request.send();
+    return http.Response.fromStream(streamed);
   }
 }

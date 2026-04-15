@@ -59,7 +59,7 @@ class _ChatMessage {
 //    so the Flask backend keeps per-user conversation history.
 // ─────────────────────────────────────────────────────────────
 class _BotApi {
-  static const String _botUrl = 'https://buddy-bot-production.up.railway.app';
+  static const String _botUrl = 'https://buddy-bot-production.up.railway.app/';
 
   /// Cached so SharedPreferences is only hit once per session.
   static String? _cachedUserId;

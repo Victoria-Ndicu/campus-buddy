@@ -1,34 +1,73 @@
 // campus_market/screens/cm_listings_screen.dart
 import 'dart:convert';
 import 'dart:developer' as dev;
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/cm_constants.dart';
 import '../widgets/cm_widgets.dart';
 import '../../../core/api_client.dart';
 
-// ─────────────────────────────────────────────────────────────
-//  API ENDPOINTS  (all under /api/v1/market/)
-//
-//  GET    /api/v1/market/listings/                             → list / filter
-//  GET    /api/v1/market/listings/?category=<cat>&search=<q>  → filtered list
-//  GET    /api/v1/market/listings/<uuid>/                      → detail
-//  POST   /api/v1/market/saved/          { listingId }        → save
-//  DELETE /api/v1/market/saved/          { listingId }        → unsave
-//  GET    /api/v1/market/messages/<uuid>/                      → conversation
-//  POST   /api/v1/market/messages/       { listingId, body }  → send message
-//  GET    /api/v1/market/reviews/        ?sellerId=<id>        → seller reviews
-//  POST   /api/v1/market/reviews/        { listingId, ... }   → post review
-// ─────────────────────────────────────────────────────────────
+const _kFilters = ['All', 'Electronics', 'Books', 'Furniture', 'Clothing', 'Sports', 'Other'];
 
-// NOTE: CMListing, CMStats, CMMessage, CMReview are all imported
-//       from ../models/cm_constants.dart — do NOT redefine them here.
+// ─────────────────────────────────────────────────────────────
+//  SHARED IMAGE WIDGET
+// ─────────────────────────────────────────────────────────────
+class _ListingImage extends StatelessWidget {
+  final CMListing listing;
+  final double height;
+  final BorderRadius? borderRadius;
 
-const _kFilters = ['All', 'Electronics', 'Books', 'Furniture', 'Clothing', 'Free'];
+  const _ListingImage({
+    required this.listing,
+    required this.height,
+    this.borderRadius,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final urls = listing.imageUrls;
+
+    if (urls.isNotEmpty && urls.first.isNotEmpty) {
+      final bytes = decodeBase64Image(urls.first);
+      if (bytes != null) {
+        final img = Image.memory(
+          bytes,
+          height: height,
+          width: double.infinity,
+          fit: BoxFit.cover,
+          gaplessPlayback: true,
+          errorBuilder: (_, __, ___) => _fallback(),
+        );
+        return borderRadius != null
+            ? ClipRRect(borderRadius: borderRadius!, child: img)
+            : img;
+      }
+    }
+    return _fallback();
+  }
+
+  Widget _fallback() {
+    final child = Container(
+      height: height,
+      width: double.infinity,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [listing.gradA, listing.gradB],
+        ),
+        borderRadius: borderRadius,
+      ),
+      child: Center(
+        child: Text(listing.emoji, style: TextStyle(fontSize: height * 0.38))),
+    );
+    return child;
+  }
+}
 
 // ─────────────────────────────────────────────────────────────
 //  SCREEN 1 — BROWSE LISTINGS
-//  GET /api/v1/market/listings/?category=<cat>&search=<q>
 // ─────────────────────────────────────────────────────────────
 class CMListingsScreen extends StatefulWidget {
   const CMListingsScreen({super.key});
@@ -37,12 +76,12 @@ class CMListingsScreen extends StatefulWidget {
 }
 
 class _CMListingsScreenState extends State<CMListingsScreen> {
-  int    _filter = 0;
-  String _query  = '';
+  int _filter = 0;
+  String _query = '';
 
   List<CMListing> _listings = [];
-  bool            _loading  = true;
-  String?         _error;
+  bool _loading = true;
+  String? _error;
 
   DateTime _lastSearch = DateTime(0);
 
@@ -52,60 +91,111 @@ class _CMListingsScreenState extends State<CMListingsScreen> {
     _loadListings();
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  READ: GET /api/v1/market/listings/
-  // ─────────────────────────────────────────────────────────
   Future<void> _loadListings() async {
-    if (mounted) setState(() { _loading = true; _error = null; });
+    if (mounted) setState(() {
+      _loading = true;
+      _error = null;
+    });
 
-    final params = <String>[];
+    final params = <String>['listing_type=sale'];
     final cat = _kFilters[_filter];
-    if (cat == 'Free') {
-      params.add('isFree=true');
-    } else if (cat != 'All') {
-      params.add('category=$cat');
-    }
+    if (cat != 'All') params.add('category=${Uri.encodeComponent(cat)}');
     if (_query.isNotEmpty) params.add('search=${Uri.encodeComponent(_query)}');
-    final qs = params.isEmpty ? '' : '?${params.join('&')}';
+    final qs = '?${params.join('&')}';
 
     try {
       final res = await ApiClient.get('/api/v1/market/listings/$qs');
       dev.log('[Listings] GET /listings$qs → ${res.statusCode}');
-      dev.log('[Listings] body: ${res.body}');
 
       if (!mounted) return;
 
       if (res.statusCode == 200) {
         final decoded = jsonDecode(res.body);
-        final raw = decoded is List
-            ? decoded
-            : (decoded['results'] as List?) ?? [];
-
+        dev.log('[Listings] Response keys: ${decoded is Map ? decoded.keys : 'not a map'}');
+        
+        // Handle the response format correctly
+        List<dynamic> raw = [];
+        
+        // Check for the expected response structure: { "success": true, "data": [...] }
+        if (decoded is Map<String, dynamic>) {
+          if (decoded['success'] == true && decoded['data'] is List) {
+            raw = decoded['data'];
+            dev.log('[Listings] Extracted ${raw.length} items from data field');
+          } else if (decoded['data'] is List) {
+            raw = decoded['data'];
+            dev.log('[Listings] Extracted ${raw.length} items from data field');
+          } else if (decoded['results'] is List) {
+            raw = decoded['results'];
+            dev.log('[Listings] Extracted ${raw.length} items from results field');
+          } else {
+            dev.log('[Listings] Response Map has unexpected structure: ${decoded.keys}');
+          }
+        } else if (decoded is List) {
+          raw = decoded;
+          dev.log('[Listings] Response is direct array with ${raw.length} items');
+        }
+        
+        if (raw.isEmpty) {
+          dev.log('[Listings] No listings found in response');
+          setState(() {
+            _listings = [];
+            _loading = false;
+          });
+          return;
+        }
+        
+        // Parse each listing with error handling
+        final List<CMListing> parsed = [];
+        for (var item in raw) {
+          if (item is Map<String, dynamic>) {
+            try {
+              final listing = CMListing.fromJson(item);
+              dev.log('[Listings] ✓ Parsed: ${listing.title} (type: ${listing.listingType}, images: ${listing.imageUrls.length})');
+              parsed.add(listing);
+            } catch (e, stack) {
+              dev.log('[Listings] ✗ Failed to parse item: $e', stackTrace: stack);
+              dev.log('[Listings] Problem item: $item');
+            }
+          } else {
+            dev.log('[Listings] ✗ Item is not a Map: ${item.runtimeType}');
+          }
+        }
+        
+        dev.log('[Listings] Successfully parsed ${parsed.length}/${raw.length} listings');
+        
+        // Filter for sale listings (though API should already do this)
+        final filtered = parsed.where((l) => l.listingType == 'sale').toList();
+        
+        if (filtered.isEmpty && parsed.isNotEmpty) {
+          dev.log('[Listings] Warning: ${parsed.length} listings parsed but none have listingType="sale"');
+          // Log the actual listingType values we got
+          final types = parsed.map((l) => l.listingType).toSet();
+          dev.log('[Listings] Found listing types: $types');
+        }
+        
         setState(() {
-          _listings = raw
-              .whereType<Map<String, dynamic>>()
-              .map(CMListing.fromJson)
-              .toList();
+          _listings = filtered;
           _loading = false;
+          _error = null;
         });
+        
+        dev.log('[Listings] Final: ${_listings.length} listings displayed');
       } else {
+        dev.log('[Listings] Error response: ${res.statusCode} - ${res.body}');
         setState(() {
-          _error   = 'Could not load listings (${res.statusCode}).';
+          _error = 'Could not load listings (${res.statusCode}).';
           _loading = false;
         });
       }
     } catch (e, s) {
-      dev.log('[Listings] error: $e', stackTrace: s);
+      dev.log('[Listings] Network error: $e', stackTrace: s);
       if (mounted) setState(() {
-        _error   = 'Network error. Pull to refresh.';
+        _error = 'Network error. Pull to refresh.';
         _loading = false;
       });
     }
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  UPDATE: Save / unsave
-  // ─────────────────────────────────────────────────────────
   Future<void> _toggleSave(CMListing l) async {
     final wasSaved = l.isSaved;
     setState(() {
@@ -120,11 +210,7 @@ class _CMListingsScreenState extends State<CMListingsScreen> {
           : await ApiClient.post('/api/v1/market/saved/',
               body: {'listingId': l.id});
 
-      dev.log('[Listings] Save ${l.id} → ${res.statusCode}');
-
-      final ok = res.statusCode == 200 ||
-                 res.statusCode == 201 ||
-                 res.statusCode == 204;
+      final ok = res.statusCode == 200 || res.statusCode == 201 || res.statusCode == 204;
       if (!ok) {
         setState(() {
           _listings = _listings.map((x) =>
@@ -151,14 +237,10 @@ class _CMListingsScreenState extends State<CMListingsScreen> {
         content: Text(msg),
         backgroundColor: CMColors.brandDark,
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ));
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  BUILD
-  // ─────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -167,14 +249,12 @@ class _CMListingsScreenState extends State<CMListingsScreen> {
         color: CMColors.brand,
         onRefresh: _loadListings,
         child: CustomScrollView(slivers: [
-
-          // ── App bar ──────────────────────────────────
+          // App bar
           SliverAppBar(
             pinned: true,
             backgroundColor: CMColors.brand,
             leading: IconButton(
-              icon: const Icon(Icons.arrow_back_ios_new_rounded,
-                color: Colors.white),
+              icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white),
               onPressed: () => Navigator.pop(context)),
             title: const Text('Browse Listings', style: TextStyle(
               fontWeight: FontWeight.w800, color: Colors.white)),
@@ -182,13 +262,12 @@ class _CMListingsScreenState extends State<CMListingsScreen> {
               Container(
                 margin: const EdgeInsets.only(right: 12),
                 child: IconButton(
-                  icon: const Icon(Icons.filter_list_rounded,
-                    color: Colors.white),
+                  icon: const Icon(Icons.filter_list_rounded, color: Colors.white),
                   onPressed: () => HapticFeedback.selectionClick())),
             ],
           ),
 
-          // ── Search bar ────────────────────────────────
+          // Search bar
           SliverToBoxAdapter(
             child: CMSearchBar(
               hint: 'Search listings…',
@@ -202,7 +281,7 @@ class _CMListingsScreenState extends State<CMListingsScreen> {
               },
             )),
 
-          // ── Filter chips ──────────────────────────────
+          // Filter chips
           SliverToBoxAdapter(
             child: SizedBox(height: 48,
               child: ListView.separated(
@@ -219,7 +298,7 @@ class _CMListingsScreenState extends State<CMListingsScreen> {
                   }),
               ))),
 
-          // ── Results count ─────────────────────────────
+          // Results count
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
@@ -231,7 +310,7 @@ class _CMListingsScreenState extends State<CMListingsScreen> {
                       color: CMColors.text3)),
             )),
 
-          // ── Loading / error / grid ────────────────────
+          // Loading / error / grid
           if (_loading)
             const SliverFillRemaining(
               child: Center(child: CircularProgressIndicator()))
@@ -270,7 +349,7 @@ class _CMListingsScreenState extends State<CMListingsScreen> {
                       MaterialPageRoute(
                         builder: (_) => CMListingDetailScreen(
                           listingId: _listings[i].id,
-                          snapshot:  _listings[i],
+                          snapshot: _listings[i],
                         ))).then((_) => _loadListings()),
                   ),
                   childCount: _listings.length,
@@ -285,14 +364,103 @@ class _CMListingsScreenState extends State<CMListingsScreen> {
 }
 
 // ─────────────────────────────────────────────────────────────
+//  LISTING GRID CARD
+// ─────────────────────────────────────────────────────────────
+class _ListingGridCard extends StatelessWidget {
+  final CMListing listing;
+  final VoidCallback onTap;
+  final VoidCallback onSaveTap;
+  const _ListingGridCard({
+    required this.listing,
+    required this.onTap,
+    required this.onSaveTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final l = listing;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: CMColors.border),
+          boxShadow: [BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 8, offset: const Offset(0, 2))],
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          // Photo / gradient banner
+          ClipRRect(
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+            child: Stack(children: [
+              SizedBox(
+                height: 110,
+                width: double.infinity,
+                child: _ListingImage(
+                  listing: l,
+                  height: 110,
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+                ),
+              ),
+              if (l.isFeatured)
+                Positioned(top: 8, left: 8,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: CMColors.accent,
+                      borderRadius: BorderRadius.circular(6)),
+                    child: const Text('🔥 Hot', style: TextStyle(
+                      fontSize: 8, fontWeight: FontWeight.w800,
+                      color: Colors.white)))),
+              Positioned(top: 8, right: 8,
+                child: GestureDetector(
+                  onTap: onSaveTap,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    width: 28, height: 28,
+                    decoration: BoxDecoration(
+                      color: l.isSaved
+                        ? Colors.red.withOpacity(0.85)
+                        : Colors.white.withOpacity(0.9),
+                      shape: BoxShape.circle),
+                    child: Center(child: Text(
+                      l.isSaved ? '❤️' : '🤍',
+                      style: const TextStyle(fontSize: 12)))),
+                )),
+            ])),
+          // Info
+          Padding(
+            padding: const EdgeInsets.all(10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(l.title, maxLines: 2, style: TextStyle(
+                  fontSize: 11, fontWeight: FontWeight.w800,
+                  color: CMColors.text, height: 1.3)),
+                const SizedBox(height: 5),
+                Text(l.price, style: TextStyle(
+                  fontSize: 14, fontWeight: FontWeight.w900,
+                  color: l.isFree ? CMColors.green : CMColors.brand)),
+                const SizedBox(height: 3),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Flexible(child: Text(l.condition, maxLines: 1,
+                      style: TextStyle(fontSize: 10, color: CMColors.text3))),
+                    Text(l.time, style: TextStyle(fontSize: 10, color: CMColors.text3)),
+                  ]),
+              ])),
+        ])));
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 //  SCREEN 2 — LISTING DETAIL
-//  GET    /api/v1/market/listings/<uuid>/
-//  POST   /api/v1/market/saved/
-//  DELETE /api/v1/market/saved/
-//  GET    /api/v1/market/reviews/?sellerId=<id>
 // ─────────────────────────────────────────────────────────────
 class CMListingDetailScreen extends StatefulWidget {
-  final String     listingId;
+  final String listingId;
   final CMListing? snapshot;
 
   const CMListingDetailScreen({
@@ -306,10 +474,11 @@ class CMListingDetailScreen extends StatefulWidget {
 }
 
 class _CMListingDetailScreenState extends State<CMListingDetailScreen> {
-  CMListing?     _listing;
+  CMListing? _listing;
   List<CMReview> _reviews = [];
-  bool           _loading = true;
-  String?        _error;
+  bool _loading = true;
+  String? _error;
+  int _imageIndex = 0;
 
   @override
   void initState() {
@@ -324,32 +493,31 @@ class _CMListingDetailScreenState extends State<CMListingDetailScreen> {
     }
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  READ: GET /api/v1/market/listings/<uuid>/
-  // ─────────────────────────────────────────────────────────
   Future<void> _fetchDetail() async {
     if (_listing == null && mounted) setState(() => _loading = true);
     try {
-      final res = await ApiClient.get(
-          '/api/v1/market/listings/${widget.listingId}/');
+      final res = await ApiClient.get('/api/v1/market/listings/${widget.listingId}/');
       dev.log('[Detail] GET /listings/${widget.listingId}/ → ${res.statusCode}');
 
       if (!mounted) return;
 
       if (res.statusCode == 200) {
         final decoded = jsonDecode(res.body);
-        if (decoded is Map<String, dynamic>) {
-          final fresh = CMListing.fromJson(decoded);
+        // Handle response format
+        final data = decoded['data'] is Map ? decoded['data'] : decoded;
+        if (data is Map<String, dynamic>) {
+          final fresh = CMListing.fromJson(data);
           setState(() {
             _listing = fresh;
             _loading = false;
-            _error   = null;
+            _error = null;
+            _imageIndex = 0;
           });
           if (fresh.sellerId.isNotEmpty) _fetchReviews(fresh.sellerId);
         }
       } else if (_listing == null) {
         setState(() {
-          _error   = 'Could not load listing (${res.statusCode}).';
+          _error = 'Could not load listing (${res.statusCode}).';
           _loading = false;
         });
       }
@@ -357,42 +525,27 @@ class _CMListingDetailScreenState extends State<CMListingDetailScreen> {
       dev.log('[Detail] error: $e', stackTrace: s);
       if (mounted && _listing == null) {
         setState(() {
-          _error   = 'Network error.';
+          _error = 'Network error.';
           _loading = false;
         });
       }
     }
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  READ: GET /api/v1/market/reviews/?sellerId=<id>
-  // ─────────────────────────────────────────────────────────
   Future<void> _fetchReviews(String sellerId) async {
     try {
-      final res = await ApiClient.get(
-          '/api/v1/market/reviews/?sellerId=$sellerId');
-      dev.log('[Detail] GET /reviews?sellerId=$sellerId → ${res.statusCode}');
-
+      final res = await ApiClient.get('/api/v1/market/reviews/?sellerId=$sellerId');
       if (!mounted || res.statusCode != 200) return;
       final decoded = jsonDecode(res.body);
-      final raw = decoded is List
-          ? decoded
-          : (decoded['results'] as List?) ?? [];
-
+      final raw = decoded is List ? decoded : (decoded['results'] as List?) ?? [];
       setState(() {
-        _reviews = raw
-            .whereType<Map<String, dynamic>>()
-            .map(CMReview.fromJson)
-            .toList();
+        _reviews = raw.whereType<Map<String, dynamic>>().map(CMReview.fromJson).toList();
       });
     } catch (e) {
       dev.log('[Detail] fetchReviews error: $e');
     }
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  UPDATE: Save / unsave
-  // ─────────────────────────────────────────────────────────
   Future<void> _toggleSave() async {
     if (_listing == null) return;
     final wasSaved = _listing!.isSaved;
@@ -405,11 +558,7 @@ class _CMListingDetailScreenState extends State<CMListingDetailScreen> {
           : await ApiClient.post('/api/v1/market/saved/',
               body: {'listingId': widget.listingId});
 
-      dev.log('[Detail] Save → ${res.statusCode}');
-
-      final ok = res.statusCode == 200 ||
-                 res.statusCode == 201 ||
-                 res.statusCode == 204;
+      final ok = res.statusCode == 200 || res.statusCode == 201 || res.statusCode == 204;
       if (!ok) {
         setState(() => _listing = _listing!.copyWith(isSaved: wasSaved));
         _snack('Could not save listing.');
@@ -430,14 +579,10 @@ class _CMListingDetailScreenState extends State<CMListingDetailScreen> {
         content: Text(msg),
         backgroundColor: CMColors.brandDark,
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ));
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  BUILD
-  // ─────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     if (_error != null && _listing == null) {
@@ -446,8 +591,7 @@ class _CMListingDetailScreenState extends State<CMListingDetailScreen> {
         appBar: AppBar(
           backgroundColor: CMColors.brand,
           leading: IconButton(
-            icon: const Icon(Icons.arrow_back_ios_new_rounded,
-              color: Colors.white),
+            icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white),
             onPressed: () => Navigator.pop(context))),
         body: Center(child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -468,22 +612,18 @@ class _CMListingDetailScreenState extends State<CMListingDetailScreen> {
     return Scaffold(
       backgroundColor: CMColors.surface2,
       body: CustomScrollView(slivers: [
-
-        // ── Hero app bar ─────────────────────────────
+        // Hero app bar
         SliverAppBar(
-          expandedHeight: 250,
+          expandedHeight: 280,
           pinned: true,
           backgroundColor: CMColors.brand,
           leading: IconButton(
-            icon: const Icon(Icons.arrow_back_ios_new_rounded,
-              color: Colors.white),
+            icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white),
             onPressed: () => Navigator.pop(context)),
           actions: [
             IconButton(
               icon: Icon(
-                l?.isSaved == true
-                  ? Icons.bookmark_rounded
-                  : Icons.bookmark_border_rounded,
+                l?.isSaved == true ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
                 color: Colors.white),
               onPressed: _toggleSave),
             const SizedBox(width: 8),
@@ -492,31 +632,13 @@ class _CMListingDetailScreenState extends State<CMListingDetailScreen> {
             background: l == null
               ? Container(color: CMColors.brandPale,
                   child: const Center(child: CircularProgressIndicator()))
-              : Container(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [l.gradA, l.gradB])),
-                  child: Stack(children: [
-                    Positioned.fill(child: Center(
-                      child: Text(l.emoji,
-                        style: const TextStyle(fontSize: 100)))),
-                    Positioned(bottom: 16, left: 16,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: CMColors.brand,
-                          borderRadius: BorderRadius.circular(8)),
-                        child: Text(l.category, style: const TextStyle(
-                          fontSize: 10, fontWeight: FontWeight.w800,
-                          color: Colors.white)))),
-                  ])),
+              : _DetailHeroBanner(listing: l, onPageChanged: (i) {
+                  setState(() => _imageIndex = i);
+                }),
           ),
         ),
 
-        // ── Body ─────────────────────────────────────
+        // Body
         SliverToBoxAdapter(
           child: l == null
             ? const Padding(
@@ -527,14 +649,30 @@ class _CMListingDetailScreenState extends State<CMListingDetailScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // Photo dot indicators
+                    if (l.imageUrls.length > 1) ...[
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: List.generate(l.imageUrls.length, (i) =>
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            margin: const EdgeInsets.symmetric(horizontal: 3),
+                            width: _imageIndex == i ? 16 : 6,
+                            height: 6,
+                            decoration: BoxDecoration(
+                              color: _imageIndex == i ? CMColors.brand : CMColors.border,
+                              borderRadius: BorderRadius.circular(3)),
+                          ))),
+                      const SizedBox(height: 12),
+                    ],
+
                     // Title + price
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Expanded(child: Text(l.title, style: TextStyle(
-                          fontSize: 20, fontWeight: FontWeight.w900,
-                          color: CMColors.text))),
+                          fontSize: 20, fontWeight: FontWeight.w900, color: CMColors.text))),
                         const SizedBox(width: 12),
                         Text(l.price, style: TextStyle(
                           fontSize: 22, fontWeight: FontWeight.w900,
@@ -564,43 +702,37 @@ class _CMListingDetailScreenState extends State<CMListingDetailScreen> {
                           child: Center(child: Text(
                             l.seller.isNotEmpty ? l.seller[0] : 'U',
                             style: const TextStyle(fontSize: 18,
-                              fontWeight: FontWeight.w900,
-                              color: Colors.white)))),
+                              fontWeight: FontWeight.w900, color: Colors.white)))),
                         const SizedBox(width: 12),
                         Expanded(child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(l.seller, style: TextStyle(
-                              fontSize: 14, fontWeight: FontWeight.w800,
-                              color: CMColors.text)),
+                              fontSize: 14, fontWeight: FontWeight.w800, color: CMColors.text)),
                             Text(
-                              'Verified campus seller  ⭐ ${l.sellerRating}',
-                              style: TextStyle(
-                                fontSize: 11, color: CMColors.text3)),
+                              'Verified campus seller ⭐ ${l.sellerRating.toStringAsFixed(1)}',
+                              style: TextStyle(fontSize: 11, color: CMColors.text3)),
                           ])),
                         Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 5),
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                           decoration: BoxDecoration(
                             color: CMColors.brandPale,
                             borderRadius: BorderRadius.circular(8)),
                           child: Text('View profile', style: TextStyle(
-                            fontSize: 11, fontWeight: FontWeight.w700,
-                            color: CMColors.brand))),
+                            fontSize: 11, fontWeight: FontWeight.w700, color: CMColors.brand))),
                       ])),
                     const SizedBox(height: 16),
 
                     // Item details
                     CMSectionLabel(title: '📋 Item Details'),
-                    CMFormField(label: 'Condition',   value: l.condition),
-                    CMFormField(label: 'Category',    value: l.category),
-                    CMFormField(label: 'Location',    value: '📍 ${l.location}'),
+                    CMFormField(label: 'Condition', value: l.condition),
+                    CMFormField(label: 'Category', value: l.category),
+                    CMFormField(label: 'Location', value: '📍 ${l.location}'),
                     CMFormField(
                       label: 'Description',
                       value: l.description.isNotEmpty
                         ? l.description
-                        : 'Well maintained ${l.title}. Available for pickup '
-                          'or delivery within campus.',
+                        : 'Well maintained ${l.title}. Available for pickup or delivery within campus.',
                       multiline: true),
 
                     // Seller reviews
@@ -620,10 +752,10 @@ class _CMListingDetailScreenState extends State<CMListingDetailScreen> {
                             HapticFeedback.mediumImpact();
                             Navigator.push(context, MaterialPageRoute(
                               builder: (_) => CMContactSellerScreen(
-                                listingId:  widget.listingId,
+                                listingId: widget.listingId,
                                 sellerName: l.seller,
-                                itemTitle:  l.title,
-                                itemPrice:  l.price,
+                                itemTitle: l.title,
+                                itemPrice: l.price,
                               ))).then((_) => _fetchDetail());
                           },
                           child: Container(
@@ -639,8 +771,7 @@ class _CMListingDetailScreenState extends State<CMListingDetailScreen> {
                             child: const Center(child: Text(
                               '📨 Contact Seller',
                               style: TextStyle(fontSize: 14,
-                                fontWeight: FontWeight.w800,
-                                color: Colors.white))))),
+                                fontWeight: FontWeight.w800, color: Colors.white))))),
                       ),
                       const SizedBox(width: 12),
                       Container(
@@ -649,8 +780,7 @@ class _CMListingDetailScreenState extends State<CMListingDetailScreen> {
                           border: Border.all(color: CMColors.border),
                           borderRadius: BorderRadius.circular(14),
                           color: Colors.white),
-                        child: const Text('🔗',
-                          style: TextStyle(fontSize: 20))),
+                        child: const Text('🔗', style: TextStyle(fontSize: 20))),
                     ]),
                   ]))),
 
@@ -661,9 +791,65 @@ class _CMListingDetailScreenState extends State<CMListingDetailScreen> {
 }
 
 // ─────────────────────────────────────────────────────────────
+//  DETAIL HERO BANNER
+// ─────────────────────────────────────────────────────────────
+class _DetailHeroBanner extends StatelessWidget {
+  final CMListing listing;
+  final ValueChanged<int> onPageChanged;
+  const _DetailHeroBanner({
+    required this.listing,
+    required this.onPageChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final urls = listing.imageUrls;
+
+    if (urls.isNotEmpty) {
+      return PageView.builder(
+        itemCount: urls.length,
+        onPageChanged: onPageChanged,
+        itemBuilder: (_, i) {
+          final bytes = decodeBase64Image(urls[i]);
+          if (bytes == null) return _fallback();
+          return Image.memory(
+            bytes,
+            fit: BoxFit.cover,
+            width: double.infinity,
+            gaplessPlayback: true,
+            errorBuilder: (_, __, ___) => _fallback(),
+          );
+        },
+      );
+    }
+
+    return _fallback();
+  }
+
+  Widget _fallback() => Container(
+    decoration: BoxDecoration(
+      gradient: LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [listing.gradA, listing.gradB],
+      ),
+    ),
+    child: Stack(children: [
+      Center(child: Text(listing.emoji, style: const TextStyle(fontSize: 100))),
+      Positioned(bottom: 16, left: 16,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: CMColors.brand,
+            borderRadius: BorderRadius.circular(8)),
+          child: Text(listing.category, style: const TextStyle(
+            fontSize: 10, fontWeight: FontWeight.w800, color: Colors.white)))),
+    ]));
+  
+}
+
+// ─────────────────────────────────────────────────────────────
 //  SCREEN 3 — CONTACT SELLER
-//  GET    /api/v1/market/messages/<uuid>/
-//  POST   /api/v1/market/messages/
 // ─────────────────────────────────────────────────────────────
 class CMContactSellerScreen extends StatefulWidget {
   final String listingId;
@@ -675,8 +861,8 @@ class CMContactSellerScreen extends StatefulWidget {
     super.key,
     required this.listingId,
     this.sellerName = 'Seller',
-    this.itemTitle  = 'Item',
-    this.itemPrice  = 'KES 0',
+    this.itemTitle = 'Item',
+    this.itemPrice = 'KES 0',
   });
 
   @override
@@ -685,13 +871,13 @@ class CMContactSellerScreen extends StatefulWidget {
 
 class _CMContactSellerScreenState extends State<CMContactSellerScreen> {
   String _channel = 'Chat';
-  bool   _sending = false;
+  bool _sending = false;
 
-  final _msgCtrl   = TextEditingController();
+  final _msgCtrl = TextEditingController();
   final _offerCtrl = TextEditingController();
 
-  List<CMMessage> _thread       = [];
-  bool            _loadingThread = true;
+  List<CMMessage> _thread = [];
+  bool _loadingThread = true;
 
   @override
   void initState() {
@@ -706,27 +892,16 @@ class _CMContactSellerScreenState extends State<CMContactSellerScreen> {
     super.dispose();
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  READ: GET /api/v1/market/messages/<uuid>/
-  // ─────────────────────────────────────────────────────────
   Future<void> _loadThread() async {
     if (mounted) setState(() => _loadingThread = true);
     try {
-      final res = await ApiClient.get(
-          '/api/v1/market/messages/${widget.listingId}/');
-      dev.log('[Contact] GET /messages/${widget.listingId}/ → ${res.statusCode}');
-
+      final res = await ApiClient.get('/api/v1/market/messages/${widget.listingId}/');
       if (!mounted) return;
       if (res.statusCode == 200) {
         final decoded = jsonDecode(res.body);
-        final raw = decoded is List
-            ? decoded
-            : (decoded['results'] as List?) ?? [];
+        final raw = decoded is List ? decoded : (decoded['results'] as List?) ?? [];
         setState(() {
-          _thread        = raw
-              .whereType<Map<String, dynamic>>()
-              .map(CMMessage.fromJson)
-              .toList();
+          _thread = raw.whereType<Map<String, dynamic>>().map(CMMessage.fromJson).toList();
           _loadingThread = false;
         });
       } else {
@@ -738,28 +913,26 @@ class _CMContactSellerScreenState extends State<CMContactSellerScreen> {
     }
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  CREATE: POST /api/v1/market/messages/
-  // ─────────────────────────────────────────────────────────
   Future<void> _sendMessage() async {
-    final body  = _msgCtrl.text.trim();
+    final body = _msgCtrl.text.trim();
     final offer = _offerCtrl.text.trim();
 
-    if (body.isEmpty) { _snack('Please enter a message.'); return; }
+    if (body.isEmpty) {
+      _snack('Please enter a message.');
+      return;
+    }
 
     setState(() => _sending = true);
 
     try {
       final payload = <String, dynamic>{
         'listingId': widget.listingId,
-        'body':      body,
-        'channel':   _channel,
+        'body': body,
+        'channel': _channel,
       };
       if (offer.isNotEmpty) payload['offerPrice'] = offer;
 
-      final res = await ApiClient.post(
-          '/api/v1/market/messages/', body: payload);
-      dev.log('[Contact] POST /messages/ → ${res.statusCode}');
+      final res = await ApiClient.post('/api/v1/market/messages/', body: payload);
 
       if (!mounted) return;
 
@@ -768,16 +941,13 @@ class _CMContactSellerScreenState extends State<CMContactSellerScreen> {
         _offerCtrl.clear();
         await _loadThread();
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(
-            'Message sent to ${widget.sellerName} via $_channel ✓'),
+          content: Text('Message sent to ${widget.sellerName} via $_channel ✓'),
           backgroundColor: CMColors.green,
           behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12))));
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))));
       } else {
         final errBody = jsonDecode(res.body) as Map<String, dynamic>?;
-        _snack(errBody?['detail']?.toString()
-            ?? 'Could not send message (${res.statusCode}).');
+        _snack(errBody?['detail']?.toString() ?? 'Could not send message (${res.statusCode}).');
       }
     } catch (e) {
       dev.log('[Contact] sendMessage error: $e');
@@ -795,14 +965,10 @@ class _CMContactSellerScreenState extends State<CMContactSellerScreen> {
         content: Text(msg),
         backgroundColor: CMColors.brandDark,
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ));
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  BUILD
-  // ─────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -810,16 +976,13 @@ class _CMContactSellerScreenState extends State<CMContactSellerScreen> {
       appBar: AppBar(
         backgroundColor: CMColors.brand,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded,
-            color: Colors.white),
+          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white),
           onPressed: () => Navigator.pop(context)),
         title: Text('Contact ${widget.sellerName}',
-          style: const TextStyle(
-            fontWeight: FontWeight.w800, color: Colors.white))),
+          style: const TextStyle(fontWeight: FontWeight.w800, color: Colors.white))),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-
           // Item summary card
           Container(
             padding: const EdgeInsets.all(14),
@@ -830,20 +993,17 @@ class _CMContactSellerScreenState extends State<CMContactSellerScreen> {
                 decoration: BoxDecoration(
                   color: CMColors.brandPale,
                   borderRadius: BorderRadius.circular(12)),
-                child: const Center(child: Text('📦',
-                  style: TextStyle(fontSize: 26)))),
+                child: const Center(child: Text('📦', style: TextStyle(fontSize: 26)))),
               const SizedBox(width: 12),
               Expanded(child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(widget.itemTitle, maxLines: 2,
                     style: TextStyle(fontSize: 13,
-                      fontWeight: FontWeight.w800,
-                      color: CMColors.text, height: 1.3)),
+                      fontWeight: FontWeight.w800, color: CMColors.text, height: 1.3)),
                   const SizedBox(height: 4),
                   Text(widget.itemPrice, style: TextStyle(
-                    fontSize: 16, fontWeight: FontWeight.w900,
-                    color: CMColors.brand)),
+                    fontSize: 16, fontWeight: FontWeight.w900, color: CMColors.brand)),
                 ])),
             ])),
 
@@ -856,9 +1016,7 @@ class _CMContactSellerScreenState extends State<CMContactSellerScreen> {
             CMSectionLabel(title: '💬 Previous Messages'),
             Container(
               decoration: CMTheme.card,
-              child: Column(
-                children: _thread.map((m) =>
-                  _MessageBubble(message: m)).toList())),
+              child: Column(children: _thread.map((m) => _MessageBubble(message: m)).toList())),
             const SizedBox(height: 8),
           ],
 
@@ -882,8 +1040,7 @@ class _CMContactSellerScreenState extends State<CMContactSellerScreen> {
               controller: _msgCtrl,
               maxLines: 4,
               decoration: InputDecoration(
-                hintText: "Hi! I'm interested in your ${widget.itemTitle}. "
-                    'Is it still available?',
+                hintText: "Hi! I'm interested in your ${widget.itemTitle}. Is it still available?",
                 hintStyle: TextStyle(fontSize: 13, color: CMColors.text3),
                 contentPadding: const EdgeInsets.all(14),
                 border: InputBorder.none))),
@@ -897,18 +1054,15 @@ class _CMContactSellerScreenState extends State<CMContactSellerScreen> {
               controller: _offerCtrl,
               keyboardType: TextInputType.number,
               decoration: InputDecoration(
-                hintText: widget.itemPrice
-                    .replaceAll(RegExp(r'[^0-9]'), ''),
+                hintText: widget.itemPrice.replaceAll(RegExp(r'[^0-9]'), ''),
                 hintStyle: TextStyle(fontSize: 13, color: CMColors.text3),
                 prefixText: 'KES  ',
-                prefixStyle: TextStyle(
-                  fontWeight: FontWeight.w700, color: CMColors.text),
+                prefixStyle: TextStyle(fontWeight: FontWeight.w700, color: CMColors.text),
                 contentPadding: const EdgeInsets.all(14),
                 border: InputBorder.none))),
 
           const SizedBox(height: 24),
 
-          // Send
           CMPrimaryButton(
             label: _sending ? 'Sending…' : 'Send Message via $_channel',
             onTap: _sending ? null : _sendMessage,
@@ -916,99 +1070,6 @@ class _CMContactSellerScreenState extends State<CMContactSellerScreen> {
         ]),
       ),
     );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-//  LISTING GRID CARD
-// ─────────────────────────────────────────────────────────────
-class _ListingGridCard extends StatelessWidget {
-  final CMListing   listing;
-  final VoidCallback onTap;
-  final VoidCallback onSaveTap;
-  const _ListingGridCard({
-    required this.listing,
-    required this.onTap,
-    required this.onSaveTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final l = listing;
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: CMColors.border),
-          boxShadow: [BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 8, offset: const Offset(0, 2))],
-        ),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // Banner
-          Container(
-            height: 110,
-            decoration: BoxDecoration(
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(16)),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft, end: Alignment.bottomRight,
-                colors: [l.gradA, l.gradB])),
-            child: Stack(children: [
-              Center(child: Text(l.emoji,
-                style: const TextStyle(fontSize: 46))),
-              if (l.isFeatured)
-                Positioned(top: 8, left: 8,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: CMColors.accent,
-                      borderRadius: BorderRadius.circular(6)),
-                    child: const Text('🔥 Hot', style: TextStyle(
-                      fontSize: 8, fontWeight: FontWeight.w800,
-                      color: Colors.white)))),
-              Positioned(top: 8, right: 8,
-                child: GestureDetector(
-                  onTap: onSaveTap,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    width: 28, height: 28,
-                    decoration: BoxDecoration(
-                      color: l.isSaved
-                        ? Colors.red.withOpacity(0.85)
-                        : Colors.white.withOpacity(0.9),
-                      shape: BoxShape.circle),
-                    child: Center(child: Text(
-                      l.isSaved ? '❤️' : '🤍',
-                      style: const TextStyle(fontSize: 12)))))),
-            ])),
-          // Info
-          Padding(
-            padding: const EdgeInsets.all(10),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(l.title, maxLines: 2, style: TextStyle(
-                  fontSize: 11, fontWeight: FontWeight.w800,
-                  color: CMColors.text, height: 1.3)),
-                const SizedBox(height: 5),
-                Text(l.price, style: TextStyle(
-                  fontSize: 14, fontWeight: FontWeight.w900,
-                  color: l.isFree ? CMColors.green : CMColors.brand)),
-                const SizedBox(height: 3),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Flexible(child: Text(l.condition, maxLines: 1,
-                      style: TextStyle(fontSize: 10, color: CMColors.text3))),
-                    Text(l.time, style: TextStyle(
-                      fontSize: 10, color: CMColors.text3)),
-                  ]),
-              ])),
-        ])));
   }
 }
 
@@ -1034,22 +1095,17 @@ class _ReviewTile extends StatelessWidget {
                 shape: BoxShape.circle,
                 color: CMColors.brandPale),
               child: Center(child: Text(
-                review.reviewerName.isNotEmpty
-                  ? review.reviewerName[0] : 'U',
-                style: TextStyle(
-                  fontSize: 13, fontWeight: FontWeight.w800,
-                  color: CMColors.brand)))),
+                review.reviewerName.isNotEmpty ? review.reviewerName[0] : 'U',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: CMColors.brand)))),
             const SizedBox(width: 8),
             Expanded(child: Text(review.reviewerName,
-              style: TextStyle(fontSize: 12,
-                fontWeight: FontWeight.w700, color: CMColors.text))),
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: CMColors.text))),
             Text('⭐ ${review.rating.toStringAsFixed(1)}',
               style: TextStyle(fontSize: 11, color: CMColors.text3)),
           ]),
           if (review.comment.isNotEmpty) ...[
             const SizedBox(height: 6),
-            Text(review.comment, style: TextStyle(
-              fontSize: 11, color: CMColors.text2, height: 1.4)),
+            Text(review.comment, style: TextStyle(fontSize: 11, color: CMColors.text2, height: 1.4)),
           ],
         ])));
   }
@@ -1068,8 +1124,7 @@ class _MessageBubble extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       child: Row(
-        mainAxisAlignment:
-          mine ? MainAxisAlignment.end : MainAxisAlignment.start,
+        mainAxisAlignment: mine ? MainAxisAlignment.end : MainAxisAlignment.start,
         children: [
           Container(
             constraints: BoxConstraints(
@@ -1079,9 +1134,7 @@ class _MessageBubble extends StatelessWidget {
               color: mine ? CMColors.brand : CMColors.brandPale,
               borderRadius: BorderRadius.circular(12)),
             child: Text(message.body, style: TextStyle(
-              fontSize: 12,
-              color: mine ? Colors.white : CMColors.text,
-              height: 1.4))),
+              fontSize: 12, color: mine ? Colors.white : CMColors.text, height: 1.4))),
         ]));
   }
 }

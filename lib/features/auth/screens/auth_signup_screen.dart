@@ -19,7 +19,7 @@ class _AuthSignupScreenState extends State<AuthSignupScreen> {
   final _confirmCtrl  = TextEditingController();
   bool _loading       = false;
 
-  static const _baseUrl = 'https://campusbuddybackend-production.up.railway.app';
+  static const _baseUrl = 'https://campusbuddybackend-production-3d8a.up.railway.app';
 
   @override
   void dispose() {

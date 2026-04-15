@@ -7,7 +7,7 @@ import '../widgets/au_widgets.dart';
 import 'auth_gate.dart';
 import '../../home/screens/home_screen.dart';
 
-const _baseUrl = 'https://campusbuddybackend-production.up.railway.app';
+const _baseUrl = 'https://campusbuddybackend-production-3d8a.up.railway.app';
 
 class AuthVerifyScreen extends StatefulWidget {
   final String email;
