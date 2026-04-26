@@ -26,7 +26,8 @@ class _ListingImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final urls = listing.imageUrls;
+    // ✅ FIX: Use imageData instead of imageUrls
+    final urls = listing.imageData;
 
     if (urls.isNotEmpty && urls.first.isNotEmpty) {
       final bytes = decodeBase64Image(urls.first);
@@ -112,11 +113,10 @@ class _CMListingsScreenState extends State<CMListingsScreen> {
       if (res.statusCode == 200) {
         final decoded = jsonDecode(res.body);
         dev.log('[Listings] Response keys: ${decoded is Map ? decoded.keys : 'not a map'}');
-        
-        // Handle the response format correctly
+
         List<dynamic> raw = [];
-        
-        // Check for the expected response structure: { "success": true, "data": [...] }
+
+        // Handle { "success": true, "data": [...] } from StandardPagination
         if (decoded is Map<String, dynamic>) {
           if (decoded['success'] == true && decoded['data'] is List) {
             raw = decoded['data'];
@@ -134,7 +134,7 @@ class _CMListingsScreenState extends State<CMListingsScreen> {
           raw = decoded;
           dev.log('[Listings] Response is direct array with ${raw.length} items');
         }
-        
+
         if (raw.isEmpty) {
           dev.log('[Listings] No listings found in response');
           setState(() {
@@ -143,14 +143,16 @@ class _CMListingsScreenState extends State<CMListingsScreen> {
           });
           return;
         }
-        
-        // Parse each listing with error handling
+
         final List<CMListing> parsed = [];
         for (var item in raw) {
           if (item is Map<String, dynamic>) {
             try {
               final listing = CMListing.fromJson(item);
-              dev.log('[Listings] ✓ Parsed: ${listing.title} (type: ${listing.listingType}, images: ${listing.imageUrls.length})');
+              dev.log('[Listings] ✓ Parsed: ${listing.title} '
+                  '(type: ${listing.listingType}, '
+                  // ✅ FIX: Log imageData length
+                  'images: ${listing.imageData.length})');
               parsed.add(listing);
             } catch (e, stack) {
               dev.log('[Listings] ✗ Failed to parse item: $e', stackTrace: stack);
@@ -160,25 +162,24 @@ class _CMListingsScreenState extends State<CMListingsScreen> {
             dev.log('[Listings] ✗ Item is not a Map: ${item.runtimeType}');
           }
         }
-        
+
         dev.log('[Listings] Successfully parsed ${parsed.length}/${raw.length} listings');
-        
-        // Filter for sale listings (though API should already do this)
+
         final filtered = parsed.where((l) => l.listingType == 'sale').toList();
-        
+
         if (filtered.isEmpty && parsed.isNotEmpty) {
-          dev.log('[Listings] Warning: ${parsed.length} listings parsed but none have listingType="sale"');
-          // Log the actual listingType values we got
+          dev.log('[Listings] Warning: ${parsed.length} listings parsed but none '
+              'have listingType="sale"');
           final types = parsed.map((l) => l.listingType).toSet();
           dev.log('[Listings] Found listing types: $types');
         }
-        
+
         setState(() {
           _listings = filtered;
           _loading = false;
           _error = null;
         });
-        
+
         dev.log('[Listings] Final: ${_listings.length} listings displayed');
       } else {
         dev.log('[Listings] Error response: ${res.statusCode} - ${res.body}');
@@ -503,7 +504,6 @@ class _CMListingDetailScreenState extends State<CMListingDetailScreen> {
 
       if (res.statusCode == 200) {
         final decoded = jsonDecode(res.body);
-        // Handle response format
         final data = decoded['data'] is Map ? decoded['data'] : decoded;
         if (data is Map<String, dynamic>) {
           final fresh = CMListing.fromJson(data);
@@ -650,10 +650,11 @@ class _CMListingDetailScreenState extends State<CMListingDetailScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     // Photo dot indicators
-                    if (l.imageUrls.length > 1) ...[
+                    // ✅ FIX: Use imageData instead of imageUrls
+                    if (l.imageData.length > 1) ...[
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
-                        children: List.generate(l.imageUrls.length, (i) =>
+                        children: List.generate(l.imageData.length, (i) =>
                           AnimatedContainer(
                             duration: const Duration(milliseconds: 200),
                             margin: const EdgeInsets.symmetric(horizontal: 3),
@@ -803,7 +804,8 @@ class _DetailHeroBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final urls = listing.imageUrls;
+    // ✅ FIX: Use imageData instead of imageUrls
+    final urls = listing.imageData;
 
     if (urls.isNotEmpty) {
       return PageView.builder(
@@ -845,7 +847,6 @@ class _DetailHeroBanner extends StatelessWidget {
           child: Text(listing.category, style: const TextStyle(
             fontSize: 10, fontWeight: FontWeight.w800, color: Colors.white)))),
     ]));
-  
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:developer' as dev;
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import '../models/eb_constants.dart';
 import '../widgets/eb_widgets.dart';
@@ -10,14 +11,13 @@ import '../../../core/api_client.dart';
 //
 //  GET    /api/v1/events/                  → list / filter events
 //  GET    /api/v1/events/<uuid>/           → event detail
-//  POST   /api/v1/events/<uuid>/rsvp/      → RSVP
-//  DELETE /api/v1/events/<uuid>/rsvp/      → cancel RSVP
+//  POST   /api/v1/events/<uuid>/rsvp/      → RSVP (body: {status: "going"|"not_going"})
 //  POST   /api/v1/events/<uuid>/save/      → save event
 //  DELETE /api/v1/events/<uuid>/save/      → unsave event
 //
 //  Query params supported:
 //    category=academic|social|sports|career  (lowercase)
-//   
+//
 // ─────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────
@@ -74,22 +74,22 @@ class _DateHelper {
 //  MODEL
 // ─────────────────────────────────────────────────────────────
 class EBEventModel {
-  final String id;
-  final String emoji;
-  final String title;
-  final String date;
-  final String rawStartAt;
-  final String rawEndAt;
-  final String location;
-  final String organiser;
-  final String category;
-  final int    attendingCount;
-  final bool   isRsvped;
-  final bool   isSaved;
-  final bool   isPast;
-  final String description;
-  final String entry;
-  final String mode;
+  final String  id;
+  final String  emoji;
+  final String  title;
+  final String  date;
+  final String  rawStartAt;
+  final String  rawEndAt;
+  final String  location;
+  final String  organiser;
+  final String  category;
+  final int     attendingCount;
+  final bool    isRsvped;
+  final bool    isSaved;
+  final bool    isPast;
+  final String  description;
+  final String  entry;
+  final String  mode;
   final String? bannerUrl;
 
   const EBEventModel({
@@ -123,15 +123,15 @@ class EBEventModel {
 
   Color get gradA {
     final c = category.toLowerCase();
-    if (c.contains('sport'))                          return const Color(0xFFECFDF5);
-    if (c.contains('career'))                         return const Color(0xFFFFFBEB);
+    if (c.contains('sport'))  return const Color(0xFFECFDF5);
+    if (c.contains('career')) return const Color(0xFFFFFBEB);
     return const Color(0xFFEDE9FE);
   }
 
   Color get gradB {
     final c = category.toLowerCase();
-    if (c.contains('sport'))                          return const Color(0xFF6EE7B7);
-    if (c.contains('career'))                         return const Color(0xFFFDE68A);
+    if (c.contains('sport'))  return const Color(0xFF6EE7B7);
+    if (c.contains('career')) return const Color(0xFFFDE68A);
     return const Color(0xFFC4B5FD);
   }
 
@@ -165,8 +165,8 @@ class EBEventModel {
       return 0;
     }
 
-    final startAt = str('startAt');
-    final endAt   = str('endAt');
+    final startAt     = str('startAt');
+    final endAt       = str('endAt');
     final displayDate = str('date').isNotEmpty
         ? str('date')
         : _DateHelper.formatRange(startAt, endAt);
@@ -207,25 +207,84 @@ class EBEventModel {
     bool? isRsvped,
     bool? isSaved,
     int?  attendingCount,
-  }) => EBEventModel(
-    id:             id,
-    title:          title,
-    emoji:          emoji,
-    date:           date,
-    rawStartAt:     rawStartAt,
-    rawEndAt:       rawEndAt,
-    location:       location,
-    organiser:      organiser,
-    category:       category,
-    attendingCount: attendingCount ?? this.attendingCount,
-    isRsvped:       isRsvped      ?? this.isRsvped,
-    isSaved:        isSaved       ?? this.isSaved,
-    isPast:         isPast,
-    description:    description,
-    entry:          entry,
-    mode:           mode,
-    bannerUrl:      bannerUrl,
-  );
+  }) =>
+      EBEventModel(
+        id:             id,
+        title:          title,
+        emoji:          emoji,
+        date:           date,
+        rawStartAt:     rawStartAt,
+        rawEndAt:       rawEndAt,
+        location:       location,
+        organiser:      organiser,
+        category:       category,
+        attendingCount: attendingCount ?? this.attendingCount,
+        isRsvped:       isRsvped      ?? this.isRsvped,
+        isSaved:        isSaved       ?? this.isSaved,
+        isPast:         isPast,
+        description:    description,
+        entry:          entry,
+        mode:           mode,
+        bannerUrl:      bannerUrl,
+      );
+}
+
+// ─────────────────────────────────────────────────────────────
+//  BANNER IMAGE
+//  Handles both data URIs (base64) and regular CDN/HTTP URLs.
+//  Pass a [fallback] widget shown while loading or on error.
+// ─────────────────────────────────────────────────────────────
+class _BannerImage extends StatelessWidget {
+  final String    url;
+  final double?   width;
+  final double?   height;
+  final BoxFit    fit;
+  final Widget    fallback;
+
+  const _BannerImage({
+    required this.url,
+    required this.fallback,
+    this.width,
+    this.height,
+    this.fit = BoxFit.cover,
+  });
+
+  /// Strip the "data:<mime>;base64," prefix and decode to bytes.
+  Uint8List? _decodeDataUri(String uri) {
+    try {
+      final comma = uri.indexOf(',');
+      final b64   = comma != -1 ? uri.substring(comma + 1) : uri;
+      return base64Decode(b64);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (url.startsWith('data:')) {
+      final bytes = _decodeDataUri(url);
+      if (bytes == null) return fallback;
+      return Image.memory(
+        bytes,
+        width:        width,
+        height:       height,
+        fit:          fit,
+        errorBuilder: (_, __, ___) => fallback,
+      );
+    }
+
+    // Regular CDN / HTTP URL
+    return Image.network(
+      url,
+      width:   width,
+      height:  height,
+      fit:     fit,
+      loadingBuilder: (_, child, progress) =>
+          progress == null ? child : fallback,
+      errorBuilder: (_, __, ___) => fallback,
+    );
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -242,15 +301,14 @@ class _EBDiscoveryScreenState extends State<EBDiscoveryScreen>
 
   late final TabController _tabController;
 
-  int _catFilter  = 0;
-  
+  int _catFilter = 0;
 
   final _categories = [
     'All', '📚 Academic', '🎵 Social',
     '⚽ Sports', '🛠 Career',
   ];
 
-  static const _catParams  = ['', 'academic', 'social', 'sports', 'career'];
+  static const _catParams = ['', 'academic', 'social', 'sports', 'career'];
 
   List<EBEventModel> _upcoming = [];
   List<EBEventModel> _past     = [];
@@ -275,7 +333,7 @@ class _EBDiscoveryScreenState extends State<EBDiscoveryScreen>
 
     try {
       final params = <String>[];
-      if (_catFilter  != 0) params.add('category=${_catParams[_catFilter]}');
+      if (_catFilter != 0) params.add('category=${_catParams[_catFilter]}');
       final query = params.isEmpty ? '' : '?${params.join('&')}';
 
       final res = await ApiClient.get('/api/v1/events/$query');
@@ -327,17 +385,19 @@ class _EBDiscoveryScreenState extends State<EBDiscoveryScreen>
   }
 
   Future<void> _toggleRsvp(EBEventModel event) async {
-    final wasGoing = event.isRsvped;
+    final wasGoing  = event.isRsvped;
+    final newStatus = wasGoing ? 'not_going' : 'going';
     _mutate(event.id, isRsvped: !wasGoing, attendingDelta: wasGoing ? -1 : 1);
 
     try {
-      final res = wasGoing
-          ? await ApiClient.delete('/api/v1/events/${event.id}/rsvp/')
-          : await ApiClient.post  ('/api/v1/events/${event.id}/rsvp/');
+      final res = await ApiClient.post(
+        '/api/v1/events/${event.id}/rsvp/',
+        body: {'status': newStatus},
+      );
 
       dev.log('[Discovery] RSVP ${event.id} → ${res.statusCode}');
 
-      final ok = res.statusCode == 200 || res.statusCode == 201 || res.statusCode == 204;
+      final ok = res.statusCode == 200 || res.statusCode == 201;
       if (!ok) {
         _mutate(event.id, isRsvped: wasGoing, attendingDelta: wasGoing ? 1 : -1);
         if (mounted) _snack('Could not update RSVP. Please try again.');
@@ -397,9 +457,9 @@ class _EBDiscoveryScreenState extends State<EBDiscoveryScreen>
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(SnackBar(
-        content: Text(msg),
+        content:         Text(msg),
         backgroundColor: EBColors.brand,
-        behavior: SnackBarBehavior.floating,
+        behavior:        SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ));
   }
@@ -417,12 +477,12 @@ class _EBDiscoveryScreenState extends State<EBDiscoveryScreen>
         ),
         title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('EventBoard', style: TextStyle(
-            fontFamily: 'serif', fontSize: 18, fontWeight: FontWeight.w900,
-            color: EBColors.brandDark, fontStyle: FontStyle.italic)),
+              fontFamily: 'serif', fontSize: 18, fontWeight: FontWeight.w900,
+              color: EBColors.brandDark, fontStyle: FontStyle.italic)),
           Text(
             _loading
-              ? 'Loading events…'
-              : '${_upcoming.length} upcoming · ${_past.length} past',
+                ? 'Loading events…'
+                : '${_upcoming.length} upcoming · ${_past.length} past',
             style: TextStyle(fontSize: 11, color: EBColors.text3)),
         ]),
         titleSpacing: 0,
@@ -431,7 +491,7 @@ class _EBDiscoveryScreenState extends State<EBDiscoveryScreen>
           child: Divider(color: EBColors.border, height: 1)),
       ),
       body: RefreshIndicator(
-        color: EBColors.brand,
+        color:     EBColors.brand,
         onRefresh: _loadEvents,
         child: CustomScrollView(slivers: [
 
@@ -440,13 +500,13 @@ class _EBDiscoveryScreenState extends State<EBDiscoveryScreen>
             child: SizedBox(height: 50,
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                itemCount: _categories.length,
+                padding:         const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                itemCount:       _categories.length,
                 separatorBuilder: (_, __) => const SizedBox(width: 7),
                 itemBuilder: (_, i) => EBChip(
-                  label: _categories[i],
+                  label:  _categories[i],
                   active: _catFilter == i,
-                  onTap: () {
+                  onTap:  () {
                     setState(() => _catFilter = i);
                     _loadEvents();
                   }),
@@ -467,50 +527,32 @@ class _EBDiscoveryScreenState extends State<EBDiscoveryScreen>
                 padding: const EdgeInsets.all(24),
                 child: Column(children: [
                   Text(_error!, textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 13, color: EBColors.text3)),
+                      style: TextStyle(fontSize: 13, color: EBColors.text3)),
                   const SizedBox(height: 12),
                   TextButton.icon(
                     onPressed: _loadEvents,
-                    icon: const Icon(Icons.refresh_rounded, size: 16),
-                    label: const Text('Retry')),
+                    icon:      const Icon(Icons.refresh_rounded, size: 16),
+                    label:     const Text('Retry')),
                 ]),
               ),
             )
           else ...[
 
-            // // ── Sort chips ─────────────────────────────────
-            // SliverToBoxAdapter(
-            //   child: SizedBox(height: 46,
-            //     child: ListView.separated(
-            //       scrollDirection: Axis.horizontal,
-            //       padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-            //       itemCount: _sorts.length,
-            //       separatorBuilder: (_, __) => const SizedBox(width: 7),
-            //       itemBuilder: (_, i) => EBChip(
-            //         label: _sorts[i],
-            //         active: _sortFilter == i,
-            //         onTap: () {
-            //           setState(() => _sortFilter = i);
-            //           _loadEvents();
-            //         }),
-            //     )),
-            // ),
-
-            // ── Upcoming / Past tab bar ────────────────────
+            // ── Upcoming / Past tab bar ──────────────────
             SliverToBoxAdapter(
               child: Container(
                 margin: const EdgeInsets.fromLTRB(16, 12, 16, 4),
                 decoration: BoxDecoration(
-                  color: EBColors.surface,
+                  color:        EBColors.surface,
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: EBColors.border)),
+                  border:       Border.all(color: EBColors.border)),
                 child: TabBar(
-                  controller: _tabController,
-                  indicator: BoxDecoration(
-                    color: EBColors.brand,
+                  controller:     _tabController,
+                  indicator:      BoxDecoration(
+                    color:        EBColors.brand,
                     borderRadius: BorderRadius.circular(10)),
-                  indicatorSize: TabBarIndicatorSize.tab,
-                  labelColor: Colors.white,
+                  indicatorSize:        TabBarIndicatorSize.tab,
+                  labelColor:           Colors.white,
                   unselectedLabelColor: EBColors.text2,
                   labelStyle: const TextStyle(
                     fontSize: 13, fontWeight: FontWeight.w700),
@@ -529,46 +571,46 @@ class _EBDiscoveryScreenState extends State<EBDiscoveryScreen>
                 child: TabBarView(
                   controller: _tabController,
                   children: [
-                    // ── Upcoming list ─────────────────
+                    // ── Upcoming list ──────────────────
                     _upcoming.isEmpty
-                      ? _EmptyState(
-                          emoji: '🗓',
-                          message: 'No upcoming events',
-                          sub: 'Check back soon or try a different category')
-                      : ListView.builder(
-                          physics: const NeverScrollableScrollPhysics(),
-                          shrinkWrap: true,
-                          itemCount: _upcoming.length,
-                          itemBuilder: (_, i) {
-                            final ev = _upcoming[i];
-                            return _EventCard(
-                              event: ev,
-                              onTap: () => _pushDetail(ev),
-                              onRsvpTap: () => _toggleRsvp(ev),
-                              onSaveTap: () => _toggleSave(ev),
-                            );
-                          }),
+                        ? _EmptyState(
+                            emoji:   '🗓',
+                            message: 'No upcoming events',
+                            sub:     'Check back soon or try a different category')
+                        : ListView.builder(
+                            physics:   const NeverScrollableScrollPhysics(),
+                            shrinkWrap: true,
+                            itemCount:  _upcoming.length,
+                            itemBuilder: (_, i) {
+                              final ev = _upcoming[i];
+                              return _EventCard(
+                                event:     ev,
+                                onTap:     () => _pushDetail(ev),
+                                onRsvpTap: () => _toggleRsvp(ev),
+                                onSaveTap: () => _toggleSave(ev),
+                              );
+                            }),
 
-                    // ── Past list ─────────────────────
+                    // ── Past list ──────────────────────
                     _past.isEmpty
-                      ? _EmptyState(
-                          emoji: '📜',
-                          message: 'No past events',
-                          sub: 'Events that have ended will appear here')
-                      : ListView.builder(
-                          physics: const NeverScrollableScrollPhysics(),
-                          shrinkWrap: true,
-                          itemCount: _past.length,
-                          itemBuilder: (_, i) {
-                            final ev = _past[i];
-                            return _EventCard(
-                              event: ev,
-                              isPastCard: true,
-                              onTap: () => _pushDetail(ev),
-                              onRsvpTap: () {},
-                              onSaveTap: () => _toggleSave(ev),
-                            );
-                          }),
+                        ? _EmptyState(
+                            emoji:   '📜',
+                            message: 'No past events',
+                            sub:     'Events that have ended will appear here')
+                        : ListView.builder(
+                            physics:    const NeverScrollableScrollPhysics(),
+                            shrinkWrap: true,
+                            itemCount:  _past.length,
+                            itemBuilder: (_, i) {
+                              final ev = _past[i];
+                              return _EventCard(
+                                event:      ev,
+                                isPastCard: true,
+                                onTap:      () => _pushDetail(ev),
+                                onRsvpTap:  () {},
+                                onSaveTap:  () => _toggleSave(ev),
+                              );
+                            }),
                   ],
                 ),
               ),
@@ -595,7 +637,7 @@ class _EBDiscoveryScreenState extends State<EBDiscoveryScreen>
       context,
       MaterialPageRoute(
         builder: (_) => EBEventDetailScreen(
-          eventId: ev.id,
+          eventId:  ev.id,
           snapshot: ev,
         )),
     ).then((_) => _loadEvents());
@@ -609,7 +651,11 @@ class _EmptyState extends StatelessWidget {
   final String emoji;
   final String message;
   final String sub;
-  const _EmptyState({required this.emoji, required this.message, required this.sub});
+  const _EmptyState({
+    required this.emoji,
+    required this.message,
+    required this.sub,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -619,10 +665,11 @@ class _EmptyState extends StatelessWidget {
         Text(emoji, style: const TextStyle(fontSize: 40)),
         const SizedBox(height: 12),
         Text(message, style: TextStyle(
-          fontSize: 15, fontWeight: FontWeight.w700, color: EBColors.text)),
+            fontSize: 15, fontWeight: FontWeight.w700, color: EBColors.text)),
         const SizedBox(height: 4),
-        Text(sub, textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 12, color: EBColors.text3)),
+        Text(sub,
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12, color: EBColors.text3)),
       ]),
     );
   }
@@ -636,7 +683,7 @@ class _EventCard extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onRsvpTap;
   final VoidCallback onSaveTap;
-  final bool isPastCard;
+  final bool         isPastCard;
 
   const _EventCard({
     required this.event,
@@ -654,75 +701,61 @@ class _EventCard extends StatelessWidget {
       child: Opacity(
         opacity: isPastCard ? 0.72 : 1.0,
         child: Container(
-          margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+          margin:     const EdgeInsets.fromLTRB(16, 0, 16, 12),
           decoration: EBTheme.card,
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
 
-            // Banner
+            // ── Banner ──────────────────────────────────
             Container(
-              height: 110,
+              height:     110,
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   colors: [e.gradA, e.gradB],
-                  begin: Alignment.topLeft, end: Alignment.bottomRight),
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(18))),
+                  begin:  Alignment.topLeft,
+                  end:    Alignment.bottomRight),
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(18))),
               child: Stack(children: [
-                // Banner image with loading + error fallback
+
+                // Banner image (base64 data URI or CDN URL)
                 if (e.bannerUrl != null)
                   ClipRRect(
-                    borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
-                    child: Image.network(
-                      e.bannerUrl!,
-                      width: double.infinity,
+                    borderRadius: const BorderRadius.vertical(
+                      top: Radius.circular(18)),
+                    child: _BannerImage(
+                      url:    e.bannerUrl!,
+                      width:  double.infinity,
                       height: 110,
-                      fit: BoxFit.cover,
-                      // Show shimmer/gradient while loading
-                      loadingBuilder: (context, child, loadingProgress) {
-                        if (loadingProgress == null) return child;
-                        return Container(
-                          width: double.infinity,
-                          height: 110,
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: [e.gradA, e.gradB],
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight)),
-                          child: Center(child: Text(e.emoji,
-                            style: const TextStyle(fontSize: 52))));
-                      },
-                      // Show emoji on network/decode error
-                      errorBuilder: (_, __, ___) =>
-                        Container(
-                          width: double.infinity,
-                          height: 110,
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: [e.gradA, e.gradB],
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight)),
-                          child: Center(child: Text(e.emoji,
-                            style: const TextStyle(fontSize: 52)))),
+                      fallback: Center(
+                        child: Text(e.emoji,
+                          style: const TextStyle(fontSize: 52))),
                     ))
                 else
-                  Center(child: Text(e.emoji, style: const TextStyle(fontSize: 52))),
+                  Center(
+                    child: Text(e.emoji,
+                      style: const TextStyle(fontSize: 52))),
 
                 // Past overlay
                 if (isPastCard)
                   Container(
                     decoration: BoxDecoration(
                       color: Colors.black.withOpacity(0.30),
-                      borderRadius: const BorderRadius.vertical(top: Radius.circular(18))),
+                      borderRadius: const BorderRadius.vertical(
+                        top: Radius.circular(18))),
                     child: const Center(
                       child: Text('PAST EVENT', style: TextStyle(
-                        fontSize: 11, fontWeight: FontWeight.w900,
-                        color: Colors.white, letterSpacing: 2)))),
+                        fontSize:   11,
+                        fontWeight: FontWeight.w900,
+                        color:      Colors.white,
+                        letterSpacing: 2)))),
 
                 // Category badge
                 Positioned(top: 8, left: 8,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 2),
                     decoration: BoxDecoration(
-                      color: isPastCard ? Colors.grey : e.catColor,
+                      color:        isPastCard ? Colors.grey : e.catColor,
                       borderRadius: BorderRadius.circular(8)),
                     child: Text(e.category, style: const TextStyle(
                       fontSize: 10, fontWeight: FontWeight.w800,
@@ -731,9 +764,10 @@ class _EventCard extends StatelessWidget {
                 // Date badge
                 Positioned(bottom: 8, right: 44,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 2),
                     decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.5),
+                      color:        Colors.black.withOpacity(0.5),
                       borderRadius: BorderRadius.circular(7)),
                     child: Text(e.date, style: const TextStyle(
                       fontSize: 9, fontWeight: FontWeight.w800,
@@ -744,26 +778,30 @@ class _EventCard extends StatelessWidget {
                   child: GestureDetector(
                     onTap: onSaveTap,
                     child: Container(
-                      width: 30, height: 30,
+                      width:  30,
+                      height: 30,
                       decoration: BoxDecoration(
                         color: e.isSaved
-                          ? Colors.red.withOpacity(0.85)
-                          : Colors.white.withOpacity(0.9),
+                            ? Colors.red.withOpacity(0.85)
+                            : Colors.white.withOpacity(0.9),
                         shape: BoxShape.circle),
-                      child: Center(child: Text(
-                        e.isSaved ? '❤️' : '🤍',
-                        style: const TextStyle(fontSize: 12)))))),
+                      child: Center(
+                        child: Text(
+                          e.isSaved ? '❤️' : '🤍',
+                          style: const TextStyle(fontSize: 12)))))),
               ])),
 
-            // Body
+            // ── Body ────────────────────────────────────
             Padding(
               padding: const EdgeInsets.all(12),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(e.title, maxLines: 2,
+                Text(e.title,
+                  maxLines: 2,
                   style: TextStyle(
-                    fontSize: 13, fontWeight: FontWeight.w800,
-                    color: isPastCard ? EBColors.text2 : EBColors.text,
-                    height: 1.3)),
+                    fontSize:   13,
+                    fontWeight: FontWeight.w800,
+                    color:      isPastCard ? EBColors.text2 : EBColors.text,
+                    height:     1.3)),
                 const SizedBox(height: 3),
                 Text('${e.location} · ${e.entry} · ${e.organiser}',
                   style: TextStyle(fontSize: 11, color: EBColors.text3)),
@@ -787,10 +825,11 @@ class _EventCard extends StatelessWidget {
                         padding: const EdgeInsets.symmetric(
                           horizontal: 10, vertical: 5),
                         decoration: BoxDecoration(
-                          color: EBColors.surface2,
+                          color:        EBColors.surface2,
                           borderRadius: BorderRadius.circular(8)),
                         child: Text('Ended', style: TextStyle(
-                          fontSize: 11, color: EBColors.text3,
+                          fontSize:   11,
+                          color:      EBColors.text3,
                           fontWeight: FontWeight.w600))),
                   ],
                 ),
@@ -818,13 +857,16 @@ class _MiniAvatarStack extends StatelessWidget {
       child: Stack(children: List.generate(avs.length, (i) => Positioned(
         left: i * 14.0,
         child: Container(
-          width: 20, height: 20,
+          width:  20,
+          height: 20,
           decoration: BoxDecoration(
-            shape: BoxShape.circle, color: avs[i].$2,
+            shape:  BoxShape.circle,
+            color:  avs[i].$2,
             border: Border.all(color: Colors.white, width: 1.5)),
           child: Center(child: Text(avs[i].$1, style: const TextStyle(
-            fontSize: 6, fontWeight: FontWeight.w800,
-            color: Colors.white))))))));
+            fontSize:   6,
+            fontWeight: FontWeight.w800,
+            color:      Colors.white))))))));
   }
 }
 
@@ -832,7 +874,7 @@ class _MiniAvatarStack extends StatelessWidget {
 //  EVENT DETAIL SCREEN
 // ─────────────────────────────────────────────────────────────
 class EBEventDetailScreen extends StatefulWidget {
-  final String eventId;
+  final String        eventId;
   final EBEventModel? snapshot;
 
   const EBEventDetailScreen({
@@ -895,49 +937,47 @@ class _EBEventDetailScreenState extends State<EBEventDetailScreen> {
       }
     }
   }
-Future<void> _toggleRsvp() async {
+
+  Future<void> _toggleRsvp() async {
     if (_event == null || _isPast) return;
-    final wasGoing = _event!.isRsvped;
-    
-    // Determine the new status based on current state
-    final newStatus = wasGoing ? 'not_going' : 'going';  // 👈 Always lowercase
-    
+    final wasGoing  = _event!.isRsvped;
+    final newStatus = wasGoing ? 'not_going' : 'going';
+
     dev.log('[Detail] Toggling RSVP: $wasGoing -> $newStatus');
-    
+
     // Optimistic update
     setState(() => _event = _event!.copyWith(
-      isRsvped: !wasGoing,
+      isRsvped:       !wasGoing,
       attendingCount: _event!.attendingCount + (wasGoing ? -1 : 1)));
 
     try {
-      // IMPORTANT: Use POST for BOTH actions (DELETE is NOT supported)
       final res = await ApiClient.post(
         '/api/v1/events/${widget.eventId}/rsvp/',
-        body: {'status': newStatus},  // 👈 Must be "going" or "not_going"
+        body: {'status': newStatus},
       );
 
       dev.log('[Detail] RSVP Response: ${res.statusCode}');
       dev.log('[Detail] Response body: ${res.body}');
 
       final ok = res.statusCode == 200 || res.statusCode == 201;
-      
+
       if (!ok) {
-        // Parse the error to show user
+        // Parse error message for user
         String errorMsg = 'Could not update RSVP.';
         if (res.statusCode == 400) {
           try {
             final errorBody = jsonDecode(res.body);
-            errorMsg = errorBody['detail'] ?? errorBody['message'] ?? 'Invalid RSVP status';
+            errorMsg = errorBody['detail']
+                    ?? errorBody['message']
+                    ?? 'Invalid RSVP status';
           } catch (_) {}
         }
-        
-        // Rollback optimistic update
+        // Rollback
         setState(() => _event = _event!.copyWith(
-          isRsvped: wasGoing,
+          isRsvped:       wasGoing,
           attendingCount: _event!.attendingCount + (wasGoing ? 1 : -1)));
         if (mounted) _snack(errorMsg);
       } else {
-        // Parse success message
         String successMsg = !wasGoing ? "✅ You're going!" : 'RSVP cancelled';
         try {
           final responseBody = jsonDecode(res.body);
@@ -945,18 +985,17 @@ Future<void> _toggleRsvp() async {
             successMsg = responseBody['message'];
           }
         } catch (_) {}
-        
         if (mounted) _snack(successMsg, bg: _event?.rsvpColor);
       }
     } catch (e) {
       dev.log('[Detail] Network error: $e');
-      // Rollback optimistic update
+      // Rollback
       setState(() => _event = _event!.copyWith(
-        isRsvped: wasGoing,
+        isRsvped:       wasGoing,
         attendingCount: _event!.attendingCount + (wasGoing ? 1 : -1)));
       if (mounted) _snack('Network error. Please try again.');
     }
-}
+  }
 
   Future<void> _toggleSave() async {
     if (_event == null) return;
@@ -988,9 +1027,9 @@ Future<void> _toggleRsvp() async {
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(SnackBar(
-        content: Text(msg),
+        content:         Text(msg),
         backgroundColor: bg ?? EBColors.brand,
-        behavior: SnackBarBehavior.floating,
+        behavior:        SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ));
   }
@@ -1001,20 +1040,23 @@ Future<void> _toggleRsvp() async {
       return Scaffold(
         backgroundColor: EBColors.surface2,
         appBar: AppBar(
-          backgroundColor: EBColors.surface, elevation: 0,
+          backgroundColor: EBColors.surface,
+          elevation: 0,
           leading: IconButton(
-            icon: const Icon(Icons.arrow_back_ios_new, size: 18, color: EBColors.text),
+            icon: const Icon(Icons.arrow_back_ios_new, size: 18,
+              color: EBColors.text),
             onPressed: () => Navigator.pop(context)),
         ),
         body: Center(child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text(_error!, style: TextStyle(fontSize: 13, color: EBColors.text3)),
+            Text(_error!,
+              style: TextStyle(fontSize: 13, color: EBColors.text3)),
             const SizedBox(height: 12),
             TextButton.icon(
               onPressed: _fetchDetail,
-              icon: const Icon(Icons.refresh_rounded, size: 16),
-              label: const Text('Retry')),
+              icon:      const Icon(Icons.refresh_rounded, size: 16),
+              label:     const Text('Retry')),
           ],
         )),
       );
@@ -1028,25 +1070,25 @@ Future<void> _toggleRsvp() async {
 
         // ── Hero header ──────────────────────────────────
         SliverAppBar(
-          expandedHeight: 200,
-          pinned: false,
+          expandedHeight:  200,
+          pinned:          false,
           backgroundColor: Colors.transparent,
           leading: GestureDetector(
             onTap: () => Navigator.pop(context),
             child: Container(
               margin: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.88),
+                color:        Colors.white.withOpacity(0.88),
                 borderRadius: BorderRadius.circular(11)),
-              child: const Icon(Icons.arrow_back_ios_new, size: 16, color: EBColors.text))),
-          // ── CHANGE: only the save heart remains; reminder icon removed ──
+              child: const Icon(Icons.arrow_back_ios_new,
+                size: 16, color: EBColors.text))),
           actions: [
             GestureDetector(
               onTap: _toggleSave,
               child: Container(
                 margin: const EdgeInsets.only(top: 8, bottom: 8, right: 8),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.88),
+                  color:        Colors.white.withOpacity(0.88),
                   borderRadius: BorderRadius.circular(11)),
                 child: Padding(
                   padding: const EdgeInsets.all(8),
@@ -1056,96 +1098,101 @@ Future<void> _toggleRsvp() async {
           ],
           flexibleSpace: FlexibleSpaceBar(
             background: e == null
-              ? Container(color: EBColors.brandPale,
-                  child: const Center(child: CircularProgressIndicator()))
-              : _DetailHero(event: e, isPast: _isPast),
+                ? Container(color: EBColors.brandPale,
+                    child: const Center(child: CircularProgressIndicator()))
+                : _DetailHero(event: e, isPast: _isPast),
           ),
         ),
 
         // ── Body ─────────────────────────────────────────
         SliverToBoxAdapter(
           child: e == null
-            ? const Padding(
-                padding: EdgeInsets.symmetric(vertical: 40),
-                child: Center(child: CircularProgressIndicator()))
-            : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              ? const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 40),
+                  child: Center(child: CircularProgressIndicator()))
+              : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
 
-                // Past notice banner
-                if (_isPast)
-                  Container(
-                    margin: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade100,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.grey.shade300)),
-                    child: Row(children: [
-                      const Text('📅', style: TextStyle(fontSize: 16)),
-                      const SizedBox(width: 8),
-                      Expanded(child: Text(
-                        'This event has already ended.',
-                        style: TextStyle(
-                          fontSize: 12, color: Colors.grey.shade700,
-                          fontWeight: FontWeight.w600))),
-                    ])),
+                  // Past notice
+                  if (_isPast)
+                    Container(
+                      margin:  const EdgeInsets.fromLTRB(16, 14, 16, 0),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
+                      decoration: BoxDecoration(
+                        color:        Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(12),
+                        border:       Border.all(color: Colors.grey.shade300)),
+                      child: Row(children: [
+                        const Text('📅', style: TextStyle(fontSize: 16)),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text(
+                          'This event has already ended.',
+                          style: TextStyle(
+                            fontSize:   12,
+                            color:      Colors.grey.shade700,
+                            fontWeight: FontWeight.w600))),
+                      ])),
 
-                // Date / location + RSVP
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Text(e.date, style: TextStyle(
-                          fontSize: 13, fontWeight: FontWeight.w700,
-                          color: EBColors.text)),
-                        Text(e.location, style: TextStyle(
-                          fontSize: 12, color: EBColors.text3)),
-                      ]),
-                      if (!_isPast)
-                        GestureDetector(
-                          onTap: _toggleRsvp,
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 200),
+                  // Date / location + RSVP
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text(e.date, style: TextStyle(
+                            fontSize:   13,
+                            fontWeight: FontWeight.w700,
+                            color:      EBColors.text)),
+                          Text(e.location, style: TextStyle(
+                            fontSize: 12, color: EBColors.text3)),
+                        ]),
+                        if (!_isPast)
+                          GestureDetector(
+                            onTap: _toggleRsvp,
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 200),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 18, vertical: 11),
+                              decoration: BoxDecoration(
+                                color:        e.isRsvped ? EBColors.green : e.rsvpColor,
+                                borderRadius: BorderRadius.circular(12)),
+                              child: Text(e.isRsvped ? '✅ Going' : 'RSVP →',
+                                style: const TextStyle(
+                                  fontSize:   14,
+                                  fontWeight: FontWeight.w800,
+                                  color:      Colors.white))))
+                        else
+                          Container(
                             padding: const EdgeInsets.symmetric(
-                              horizontal: 18, vertical: 11),
+                              horizontal: 14, vertical: 10),
                             decoration: BoxDecoration(
-                              color: e.isRsvped ? EBColors.green : e.rsvpColor,
-                              borderRadius: BorderRadius.circular(12)),
-                            child: Text(e.isRsvped ? '✅ Going' : 'RSVP →',
-                              style: const TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.w800,
-                                color: Colors.white))))
-                      else
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 10),
-                          decoration: BoxDecoration(
-                            color: EBColors.surface2,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: EBColors.border)),
-                          child: Text('Ended', style: TextStyle(
-                            fontSize: 13, color: EBColors.text3,
-                            fontWeight: FontWeight.w700))),
-                    ])),
+                              color:        EBColors.surface2,
+                              borderRadius: BorderRadius.circular(12),
+                              border:       Border.all(color: EBColors.border)),
+                            child: Text('Ended', style: TextStyle(
+                              fontSize:   13,
+                              color:      EBColors.text3,
+                              fontWeight: FontWeight.w700))),
+                      ])),
 
-                const SizedBox(height: 14),
-                EBFormField(label: 'Organised by', value: e.organiser),
-                EBFormField(label: 'Attending',
-                  value: '${e.attendingCount} people confirmed'),
-                EBFormField(label: 'Entry', value: e.entry),
-                EBFormField(label: 'Mode', value: e.mode),
-                EBFormField(label: 'About',
-                  value: e.description.isNotEmpty
-                    ? e.description
-                    : 'No description provided.',
-                  multiline: true),
+                  const SizedBox(height: 14),
+                  EBFormField(label: 'Organised by', value: e.organiser),
+                  EBFormField(label: 'Attending',
+                    value: '${e.attendingCount} people confirmed'),
+                  EBFormField(label: 'Entry',  value: e.entry),
+                  EBFormField(label: 'Mode',   value: e.mode),
+                  EBFormField(
+                    label: 'About',
+                    value: e.description.isNotEmpty
+                        ? e.description
+                        : 'No description provided.',
+                    multiline: true),
 
-                EBSectionLabel(title: "Who's Going"),
-                _AttendeeList(count: e.attendingCount),
-                const SizedBox(height: 40),
-              ]),
+                  EBSectionLabel(title: "Who's Going"),
+                  _AttendeeList(count: e.attendingCount),
+                  const SizedBox(height: 40),
+                ]),
         ),
       ]),
     );
@@ -1157,7 +1204,7 @@ Future<void> _toggleRsvp() async {
 // ─────────────────────────────────────────────────────────────
 class _DetailHero extends StatelessWidget {
   final EBEventModel event;
-  final bool isPast;
+  final bool         isPast;
   const _DetailHero({required this.event, required this.isPast});
 
   @override
@@ -1167,78 +1214,74 @@ class _DetailHero extends StatelessWidget {
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: isPast
-            ? [Colors.grey.shade300, Colors.grey.shade500]
-            : [e.gradA, e.gradB],
-          begin: Alignment.topLeft, end: Alignment.bottomRight)),
+              ? [Colors.grey.shade300, Colors.grey.shade500]
+              : [e.gradA, e.gradB],
+          begin: Alignment.topLeft,
+          end:   Alignment.bottomRight)),
       child: Stack(children: [
-        // Banner image with loading + error fallback
+
+        // Banner image (base64 data URI or CDN URL)
         if (e.bannerUrl != null)
           Positioned.fill(
-            child: Image.network(
-              e.bannerUrl!,
-              fit: BoxFit.cover,
-              loadingBuilder: (context, child, loadingProgress) {
-                if (loadingProgress == null) return child;
-                // Show gradient + emoji while loading
-                return Container(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: isPast
-                        ? [Colors.grey.shade300, Colors.grey.shade500]
-                        : [e.gradA, e.gradB],
-                      begin: Alignment.topLeft, end: Alignment.bottomRight)),
-                  child: Center(child: Text(e.emoji,
-                    style: const TextStyle(fontSize: 80))));
-              },
-              errorBuilder: (_, __, ___) =>
-                Container(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: isPast
-                        ? [Colors.grey.shade300, Colors.grey.shade500]
-                        : [e.gradA, e.gradB],
-                      begin: Alignment.topLeft, end: Alignment.bottomRight)),
-                  child: Center(child: Text(e.emoji,
-                    style: const TextStyle(fontSize: 80)))),
+            child: _BannerImage(
+              url:      e.bannerUrl!,
+              fallback: Center(
+                child: Text(e.emoji,
+                  style: const TextStyle(fontSize: 80))),
             ))
         else
-          Center(child: Text(e.emoji, style: const TextStyle(fontSize: 80))),
+          Center(
+            child: Text(e.emoji,
+              style: const TextStyle(fontSize: 80))),
 
-        Positioned(bottom: 0, left: 0, right: 0,
+        // Title + category overlay at bottom
+        Positioned(
+          bottom: 0, left: 0, right: 0,
           child: Container(
             padding: const EdgeInsets.fromLTRB(16, 30, 16, 14),
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                colors: [Colors.transparent, Colors.black.withOpacity(0.65)],
-                begin: Alignment.topCenter, end: Alignment.bottomCenter)),
+                colors: [
+                  Colors.transparent,
+                  Colors.black.withOpacity(0.65)],
+                begin: Alignment.topCenter,
+                end:   Alignment.bottomCenter)),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
+              mainAxisSize:       MainAxisSize.min,
               children: [
                 Row(children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
-                      color: isPast ? Colors.grey : e.catColor,
+                      color:        isPast ? Colors.grey : e.catColor,
                       borderRadius: BorderRadius.circular(8)),
                     child: Text(e.category, style: const TextStyle(
-                      fontSize: 10, fontWeight: FontWeight.w800, color: Colors.white))),
+                      fontSize:   10,
+                      fontWeight: FontWeight.w800,
+                      color:      Colors.white))),
                   if (isPast) ...[
                     const SizedBox(width: 6),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 3),
                       decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.5),
+                        color:        Colors.black.withOpacity(0.5),
                         borderRadius: BorderRadius.circular(8)),
                       child: const Text('PAST', style: TextStyle(
-                        fontSize: 10, fontWeight: FontWeight.w800,
-                        color: Colors.white, letterSpacing: 1))),
+                        fontSize:      10,
+                        fontWeight:    FontWeight.w800,
+                        color:         Colors.white,
+                        letterSpacing: 1))),
                   ],
                 ]),
                 const SizedBox(height: 6),
                 Text(e.title, style: const TextStyle(
-                  fontSize: 18, fontStyle: FontStyle.italic,
-                  color: Colors.white, height: 1.3)),
+                  fontSize:      18,
+                  fontStyle:     FontStyle.italic,
+                  color:         Colors.white,
+                  height:        1.3)),
               ],
             ),
           )),
@@ -1264,32 +1307,42 @@ class _AttendeeList extends StatelessWidget {
     final remainder = count > 4 ? count - 4 : 0;
 
     return Container(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+      margin:     const EdgeInsets.fromLTRB(16, 0, 16, 0),
       decoration: EBTheme.cardSm,
       child: Column(children: [
         ...attendees.map<Widget>((a) => Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           child: Row(children: [
             Container(
-              width: 34, height: 34,
+              width:  34,
+              height: 34,
               decoration: BoxDecoration(
-                gradient: LinearGradient(colors: [a.$4, a.$4.withOpacity(0.7)]),
+                gradient: LinearGradient(
+                  colors: [a.$4, a.$4.withOpacity(0.7)]),
                 borderRadius: BorderRadius.circular(11)),
-              child: Center(child: Text(a.$1, style: const TextStyle(fontSize: 16)))),
+              child: Center(
+                child: Text(a.$1,
+                  style: const TextStyle(fontSize: 16)))),
             const SizedBox(width: 10),
             Expanded(child: Text(a.$2, style: TextStyle(
-              fontSize: 13, fontWeight: FontWeight.w700, color: EBColors.text))),
-            Text(a.$3, style: TextStyle(fontSize: 11, color: EBColors.text3)),
+              fontSize:   13,
+              fontWeight: FontWeight.w700,
+              color:      EBColors.text))),
+            Text(a.$3, style: TextStyle(
+              fontSize: 11, color: EBColors.text3)),
             const SizedBox(width: 8),
-            Text('✓', style: TextStyle(fontSize: 16, color: EBColors.green)),
+            Text('✓', style: TextStyle(
+              fontSize: 16, color: EBColors.green)),
           ])),
         ),
         if (remainder > 0)
           Padding(
             padding: const EdgeInsets.all(9),
             child: Center(child: Text('+ $remainder more attendees',
-              style: TextStyle(fontSize: 12,
-                fontWeight: FontWeight.w700, color: EBColors.brand)))),
+              style: TextStyle(
+                fontSize:   12,
+                fontWeight: FontWeight.w700,
+                color:      EBColors.brand)))),
       ]),
     );
   }

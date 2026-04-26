@@ -1,9 +1,9 @@
 import 'dart:convert';
 import 'dart:developer' as dev;
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:http/http.dart' as http;
 import 'package:qr_flutter/qr_flutter.dart';
 import '../models/eb_constants.dart';
 import '../widgets/eb_widgets.dart';
@@ -12,10 +12,29 @@ import '../../../core/api_client.dart';
 // ─────────────────────────────────────────────────────────────
 //  SCREEN — Create Event
 //
-//  API endpoints used:
-//  POST /api/v1/events/uploads/banner/  → upload banner (multipart)
-//  POST /api/v1/events/                 → create & publish event
+//  API endpoint used:
+//  POST /api/v1/events/   → create & publish event
+//                           (banner sent as base64 in body,
+//                            same pattern as campus market)
 // ─────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────
+//  HELPER — encode a file to a data-URI base64 string
+//  (mirrors _fileToBase64 in cm_post_screen.dart)
+// ─────────────────────────────────────────────────────────────
+Future<String> _fileToBase64(File file) async {
+  final bytes = await file.readAsBytes();
+  final ext   = file.path.split('.').last.toLowerCase();
+  final mime  = switch (ext) {
+    'jpg' || 'jpeg' => 'image/jpeg',
+    'png'           => 'image/png',
+    'gif'           => 'image/gif',
+    'webp'          => 'image/webp',
+    _               => 'image/jpeg',
+  };
+  return 'data:$mime;base64,${base64Encode(bytes)}';
+}
+
 class EBCreateEventScreen extends StatefulWidget {
   const EBCreateEventScreen({super.key});
 
@@ -25,16 +44,20 @@ class EBCreateEventScreen extends StatefulWidget {
 
 class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
   // ── Form state ────────────────────────────────────────────
-  String  _category      = 'academic';
-  String  _mode          = 'In-Person';
-  bool    _publishing    = false;
+  String _category   = 'academic';
+  String _mode       = 'In-Person';
+  bool   _publishing = false;
 
-  // Banner
-  String? _bannerBase64;       // local preview (data URI)
-  String? _bannerUrl;          // returned by upload endpoint (or base64 fallback)
-  bool    _bannerUploading = false;
+  // Banner — single File reference + encoded base64 data-URI.
+  // _bannerFile    : kept for local display via Image.file()
+  // _bannerBase64  : data-URI sent directly in the POST body,
+  //                  same way market listings send image_data.
+  //                  null → no banner selected yet.
+  File?   _bannerFile;
+  String? _bannerBase64;
+  bool    _pickingBanner = false;
 
-  // Date/time (stored as DateTime, displayed formatted)
+  // Date/time
   DateTime? _startAt;
   DateTime? _endAt;
 
@@ -43,19 +66,18 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
   final _capacityCtrl = TextEditingController();
   final _descCtrl     = TextEditingController();
 
-  // ── Category options ─────────────────────────────────────
+  // ── Category options ──────────────────────────────────────
   static const _cats = [
-    ('📚', 'academic',  'Academic'),
-    ('🎵', 'social',    'Social'),
-    ('⚽', 'sports',    'Sports'),
-    ('🛠',  'career',    'Career'),
-    ('🎭', 'other',     'Other'),
+    ('📚', 'academic', 'Academic'),
+    ('🎵', 'social',   'Social'),
+    ('⚽', 'sports',   'Sports'),
+    ('🛠',  'career',   'Career'),
+    ('🎭', 'other',    'Other'),
   ];
 
-  // ── Event mode options ───────────────────────────────────
+  // ── Event mode options ────────────────────────────────────
   static const _modes = ['In-Person', 'Online', 'Hybrid'];
 
-  // ─────────────────────────────────────────────────────────
   @override
   void dispose() {
     _titleCtrl.dispose();
@@ -66,72 +88,46 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
   }
 
   // ─────────────────────────────────────────────────────────
-  //  BANNER — POST /api/v1/events/uploads/banner/
+  //  BANNER — pick from gallery and encode to base64.
   //
-  //  Flow:
-  //  1. Open image picker
-  //  2. Read file as bytes → base64 (for local preview)
-  //  3. POST multipart to upload endpoint using ApiClient.uploadMultipart()
-  //  4. Store returned URL in _bannerUrl
-  //  5. If upload fails, fall back to base64 data URI
+  //  No separate upload API call is made here.
+  //  The data-URI is stored and sent as `banner_image` when
+  //  the user taps Publish — identical to how the market
+  //  screen sends `image_data` for listing images.
   // ─────────────────────────────────────────────────────────
   Future<void> _pickBanner() async {
-    final picker = ImagePicker();
-    final file   = await picker.pickImage(
-      source:     ImageSource.gallery,
-      maxWidth:   1920,
-      maxHeight:  1080,
-      imageQuality: 85,
-    );
-    if (file == null) return;
-
-    final bytes  = await file.readAsBytes();
-    final base64 = base64Encode(bytes);
-    final ext    = file.name.split('.').last.toLowerCase();
-    final mime   = ext == 'png' ? 'image/png' : 'image/jpeg';
-    final dataUri = 'data:$mime;base64,$base64';
-
-    setState(() {
-      _bannerBase64    = dataUri;
-      _bannerUploading = true;
-    });
+    HapticFeedback.selectionClick();
+    setState(() => _pickingBanner = true);
 
     try {
-      // Use the new uploadMultipart method from ApiClient
-      final response = await ApiClient.uploadMultipart(
-        '/api/v1/events/uploads/banner/',
-        files: [
-          await http.MultipartFile.fromBytes(
-            'file',  // field name expected by your backend
-            bytes,
-            filename: file.name,
-          ),
-        ],
-        requiresAuth: true,
+      final picker = ImagePicker();
+      final picked = await picker.pickImage(
+        source:       ImageSource.gallery,
+        maxWidth:     1920,
+        maxHeight:    1080,
+        imageQuality: 85,
       );
+      if (picked == null || !mounted) return;
 
-      dev.log('[Banner] POST /uploads/banner/ → ${response.statusCode}');
+      final file     = File(picked.path);
+      final dataUri  = await _fileToBase64(file);
 
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        final body = jsonDecode(response.body) as Map<String, dynamic>;
-        // Try to get URL from different possible response formats
-        _bannerUrl = body['data']?['bannerUrl'] as String? 
-                     ?? body['bannerUrl'] as String?
-                     ?? body['url'] as String?
-                     ?? dataUri;
-      } else {
-        // Fallback: store base64 directly as banner_url
-        // The DB banner_url URLField(max_length=500) accepts data URIs
-        _bannerUrl = dataUri;
-        dev.log('[Banner] upload failed (${response.statusCode}), using base64 fallback');
-      }
+      setState(() {
+        _bannerFile   = file;
+        _bannerBase64 = dataUri;
+      });
     } catch (e) {
-      _bannerUrl = dataUri;
-      dev.log('[Banner] network error: $e — using base64 fallback');
+      dev.log('[Banner] pick error: $e');
+      if (mounted) _snack('Could not pick image. Please try again.');
     } finally {
-      if (mounted) setState(() => _bannerUploading = false);
+      if (mounted) setState(() => _pickingBanner = false);
     }
   }
+
+  void _removeBanner() => setState(() {
+    _bannerFile   = null;
+    _bannerBase64 = null;
+  });
 
   // ─────────────────────────────────────────────────────────
   //  DATE / TIME PICKERS
@@ -142,7 +138,6 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
         ? (_startAt ?? now)
         : (_endAt   ?? (_startAt?.add(const Duration(hours: 2)) ?? now));
 
-    // Calendar
     final date = await showDatePicker(
       context:     context,
       initialDate: init,
@@ -159,10 +154,8 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
         child: child!,
       ),
     );
-    if (date == null) return;
+    if (date == null || !mounted) return;
 
-    // Clock
-    if (!mounted) return;
     final time = await showTimePicker(
       context:     context,
       initialTime: TimeOfDay.fromDateTime(init),
@@ -187,7 +180,6 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
     setState(() {
       if (isStart) {
         _startAt = combined;
-        // Auto-advance end date if it's now before start
         if (_endAt != null && _endAt!.isBefore(combined)) _endAt = null;
       } else {
         _endAt = combined;
@@ -197,9 +189,11 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
 
   String _fmtDateTime(DateTime? dt) {
     if (dt == null) return 'Pick date & time';
-    final months = ['Jan','Feb','Mar','Apr','May','Jun',
-                    'Jul','Aug','Sep','Oct','Nov','Dec'];
-    final h  = dt.hour   > 12  ? dt.hour   - 12  : (dt.hour   == 0 ? 12 : dt.hour);
+    final months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
+    final h  = dt.hour > 12 ? dt.hour - 12 : (dt.hour == 0 ? 12 : dt.hour);
     final m  = dt.minute.toString().padLeft(2, '0');
     final ap = dt.hour >= 12 ? 'PM' : 'AM';
     return '${months[dt.month - 1]} ${dt.day}, ${dt.year}  ·  $h:$m $ap';
@@ -208,15 +202,28 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
   // ─────────────────────────────────────────────────────────
   //  PUBLISH — POST /api/v1/events/
   //
-  //  Payload matches CreateEventSerializer fields exactly.
-  //  campus_id has been removed from model & serializer.
+  //  banner_image is a base64 data-URI string, sent directly
+  //  in the body — no separate upload endpoint, no CDN URL
+  //  needed.  Backend decodes and stores it.
+  //
+  //  Payload shape:
+  //  {
+  //    "title":        string,
+  //    "category":     string,
+  //    "mode":         string,
+  //    "start_at":     ISO-8601,
+  //    "end_at":       ISO-8601 | omitted,
+  //    "location":     string   | omitted,
+  //    "capacity":     int      | omitted,
+  //    "banner_url":   "data:image/jpeg;base64,…" | omitted,
+  //    "description":  string   | omitted,
+  //  }
   // ─────────────────────────────────────────────────────────
   Future<void> _publish() async {
     final title = _titleCtrl.text.trim();
-    if (title.isEmpty) { _snack('Please enter an event title.'); return; }
+    if (title.isEmpty)    { _snack('Please enter an event title.');      return; }
     if (_startAt == null) { _snack('Please pick a start date & time.'); return; }
 
-    // Validate end date is after start
     if (_endAt != null && !_endAt!.isAfter(_startAt!)) {
       _snack('End time must be after start time.');
       return;
@@ -226,25 +233,31 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
 
     try {
       final body = <String, dynamic>{
-        'title':       title,
-        'category':    _category,
-        'mode':        _mode.toLowerCase(),  // add mode field
-        // ISO 8601 — Django DateTimeField accepts this directly
-        'start_at':    _startAt!.toUtc().toIso8601String(),
+        'title':    title,
+        'category': _category,
+        'mode':     _mode.toLowerCase(),
+        'start_at': _startAt!.toUtc().toIso8601String(),
         if (_endAt != null)
-          'end_at':    _endAt!.toUtc().toIso8601String(),
+          'end_at': _endAt!.toUtc().toIso8601String(),
         if (_venueCtrl.text.trim().isNotEmpty)
-          'location':  _venueCtrl.text.trim(),
+          'location': _venueCtrl.text.trim(),
         if (_capacityCtrl.text.trim().isNotEmpty)
-          'capacity':  int.tryParse(_capacityCtrl.text.trim()),
-        if (_bannerUrl != null)
-          'banner_url': _bannerUrl,
+          'capacity': int.tryParse(_capacityCtrl.text.trim()),
+        // Banner as base64 data-URI — same pattern as market's image_data.
+        // Field name kept as banner_url to match the existing backend contract.
+        // Omitted entirely when no banner was selected.
+        if (_bannerBase64 != null)
+          'banner_url': _bannerBase64,
         if (_descCtrl.text.trim().isNotEmpty)
           'description': _descCtrl.text.trim(),
       };
 
+      dev.log('[CreateEvent] POST /events/ payload keys: ${body.keys}');
+
       final res = await ApiClient.post('/api/v1/events/', body: body);
+
       dev.log('[CreateEvent] POST /events/ → ${res.statusCode}');
+      dev.log('[CreateEvent] body: ${res.body}');
 
       if (!mounted) return;
 
@@ -253,15 +266,14 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
         final eventData = json['data'] as Map<String, dynamic>? ?? json;
         final eventId   = eventData['id']?.toString() ?? '';
 
-        // Show RSVP sheet with QR + link
         _showRsvpSheet(eventId: eventId, eventTitle: title);
       } else {
-        final body     = jsonDecode(res.body) as Map<String, dynamic>?;
-        final errBlock = body?['error'] as Map<String, dynamic>?;
+        final respBody = jsonDecode(res.body) as Map<String, dynamic>?;
+        final errBlock = respBody?['error'] as Map<String, dynamic>?;
         final msg      = errBlock?['message']?.toString()
-            ?? body?['detail']?.toString()
-            ?? body?['message']?.toString()
-            ?? 'Could not publish event (${res.statusCode}).';
+                      ?? respBody?['detail']?.toString()
+                      ?? respBody?['message']?.toString()
+                      ?? 'Could not publish event (${res.statusCode}).';
         _snack(msg);
       }
     } catch (e) {
@@ -273,27 +285,22 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
   }
 
   // ─────────────────────────────────────────────────────────
-  //  RSVP SHEET — QR code + shareable link
-  //
-  //  RSVP URL format:  https://<host>/events/<eventId>/rsvp/
-  //  This matches the Django route: <uuid:pk>/rsvp/
+  //  RSVP SHEET
   // ─────────────────────────────────────────────────────────
   void _showRsvpSheet({required String eventId, required String eventTitle}) {
-    // Build the deep-link / web URL attendees use to RSVP
-    // Replace with your actual app domain or use a universal link
     const appBase = 'https://eventboard.app';
     final rsvpUrl = '$appBase/events/$eventId/rsvp/';
 
     showModalBottomSheet(
-      context:        context,
+      context:            context,
       isScrollControlled: true,
-      backgroundColor: Colors.transparent,
+      backgroundColor:    Colors.transparent,
       builder: (_) => _RsvpShareSheet(
         eventTitle: eventTitle,
         rsvpUrl:    rsvpUrl,
         onDone: () {
-          Navigator.pop(context);  // close sheet
-          Navigator.pop(context);  // pop create screen
+          Navigator.pop(context);
+          Navigator.pop(context);
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content:         Text('✅ Event published!'),
@@ -305,7 +312,6 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
     );
   }
 
-  // ─────────────────────────────────────────────────────────
   void _snack(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
@@ -314,9 +320,7 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
         content:         Text(msg),
         backgroundColor: EBColors.brand,
         behavior:        SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ));
   }
 
@@ -347,7 +351,8 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
             onPressed: _publishing ? null : _publish,
             child: _publishing
                 ? const SizedBox(
-                    width: 18, height: 18,
+                    width:  18,
+                    height: 18,
                     child: CircularProgressIndicator(
                       strokeWidth: 2,
                       color:       EBColors.brand,
@@ -373,7 +378,7 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
 
-            // ── Intro ────────────────────────────────────
+            // ── Intro ──────────────────────────────────
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
               child: Text(
@@ -382,14 +387,15 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
               ),
             ),
 
-            // ── Banner upload ────────────────────────────
-            _BannerUploadTile(
-              base64:    _bannerBase64,
-              uploading: _bannerUploading,
-              onTap:     _pickBanner,
+            // ── Banner picker ──────────────────────────
+            _BannerPickerTile(
+              bannerFile: _bannerFile,
+              picking:    _pickingBanner,
+              onPick:     _pickingBanner ? null : _pickBanner,
+              onRemove:   _removeBanner,
             ),
 
-            // ── Title ────────────────────────────────────
+            // ── Title ──────────────────────────────────
             _SectionLabel('Event Details'),
             _FormInput(
               label:      'Event Title *',
@@ -397,7 +403,7 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
               controller: _titleCtrl,
             ),
 
-            // ── Category ─────────────────────────────────
+            // ── Category ───────────────────────────────
             _SectionLabel('Category'),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -415,7 +421,7 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
               ),
             ),
 
-            // ── Date & Time ──────────────────────────────
+            // ── Date & Time ────────────────────────────
             _SectionLabel('Date & Time'),
             _DateTimeTile(
               label:   'Starts',
@@ -434,7 +440,7 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
             ),
             const SizedBox(height: 4),
 
-            // ── Venue ────────────────────────────────────
+            // ── Venue ──────────────────────────────────
             _SectionLabel('Location'),
             _FormInput(
               label:      'Venue',
@@ -442,14 +448,14 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
               controller: _venueCtrl,
             ),
 
-            // ── Event mode ───────────────────────────────
+            // ── Event mode ─────────────────────────────
             _SectionLabel('Event Mode'),
             SizedBox(
               height: 46,
               child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                padding:         const EdgeInsets.symmetric(horizontal: 16),
-                itemCount:       _modes.length,
+                scrollDirection:  Axis.horizontal,
+                padding:          const EdgeInsets.symmetric(horizontal: 16),
+                itemCount:        _modes.length,
                 separatorBuilder: (_, __) => const SizedBox(width: 7),
                 itemBuilder: (_, i) => EBChip(
                   label:  _modes[i],
@@ -459,17 +465,17 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
               ),
             ),
 
-            // ── Capacity ─────────────────────────────────
+            // ── Capacity ───────────────────────────────
             _SectionLabel('Capacity'),
             _FormInput(
-              label:       'Max Attendees (optional)',
-              hint:        'e.g. 150',
-              controller:  _capacityCtrl,
-              keyboardType: TextInputType.number,
+              label:           'Max Attendees (optional)',
+              hint:            'e.g. 150',
+              controller:      _capacityCtrl,
+              keyboardType:    TextInputType.number,
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
             ),
 
-            // ── Description ──────────────────────────────
+            // ── Description ────────────────────────────
             _FormInput(
               label:      'Description',
               hint:       'Describe the event, what attendees can expect…',
@@ -479,44 +485,40 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
 
             const SizedBox(height: 6),
 
-            // ── Auto-reminder notice ──────────────────────
+            // ── Auto-reminder notice ────────────────────
             Container(
               margin:  const EdgeInsets.symmetric(horizontal: 16),
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
                 color:        EBColors.brandPale,
                 borderRadius: BorderRadius.circular(14),
-                border:       Border.all(color: EBColors.brandLight, width: 1.5),
+                border: Border.all(color: EBColors.brandLight, width: 1.5),
               ),
-              child: Row(
-                children: [
-                  const Text('🔔', style: TextStyle(fontSize: 20)),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Auto-reminders enabled',
-                          style: TextStyle(
-                            fontSize:   13,
-                            fontWeight: FontWeight.w700,
-                            color:      EBColors.brand,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          'Attendees get 24h and 1h reminders automatically.',
-                          style: TextStyle(fontSize: 11, color: EBColors.text2),
-                        ),
-                      ],
+              child: Row(children: [
+                const Text('🔔', style: TextStyle(fontSize: 20)),
+                const SizedBox(width: 10),
+                Expanded(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Auto-reminders enabled',
+                      style: TextStyle(
+                        fontSize:   13,
+                        fontWeight: FontWeight.w700,
+                        color:      EBColors.brand,
+                      ),
                     ),
-                  ),
-                ],
-              ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Attendees get 24h and 1h reminders automatically.',
+                      style: TextStyle(fontSize: 11, color: EBColors.text2),
+                    ),
+                  ],
+                )),
+              ]),
             ),
 
-            // ── Publish button ───────────────────────────
+            // ── Publish button ─────────────────────────
             EBPrimaryButton(
               label: _publishing ? 'Publishing…' : '🎉 Publish Event',
               onTap: _publishing ? null : _publish,
@@ -529,11 +531,155 @@ class _EBCreateEventScreenState extends State<EBCreateEventScreen> {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  RSVP SHARE SHEET  (QR code + copyable link)
+//  BANNER PICKER TILE
+//
+//  Shows the picked image via Image.file() (no base64 decode
+//  needed for display — that's what the File is for).
+//  The remove (×) button mirrors the image remove pattern
+//  used in CMCreateListingScreen.
+// ─────────────────────────────────────────────────────────────
+class _BannerPickerTile extends StatelessWidget {
+  final File?        bannerFile;
+  final bool         picking;
+  final VoidCallback? onPick;
+  final VoidCallback  onRemove;
+
+  const _BannerPickerTile({
+    required this.bannerFile,
+    required this.picking,
+    required this.onPick,
+    required this.onRemove,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          GestureDetector(
+            onTap: onPick,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              height:   110,
+              decoration: BoxDecoration(
+                color:        bannerFile != null ? null : EBColors.brandPale,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: bannerFile != null
+                      ? EBColors.brand
+                      : EBColors.brandLight,
+                  width: 1.5,
+                ),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: picking
+                  ? const Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                            width:  22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color:       EBColors.brand,
+                            ),
+                          ),
+                          SizedBox(height: 8),
+                          Text(
+                            'Loading image…',
+                            style: TextStyle(
+                              fontSize:   12,
+                              color:      EBColors.brand,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    )
+                  : bannerFile != null
+                      ? Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            Image.file(bannerFile!, fit: BoxFit.cover),
+                            // Dark overlay + "change" label
+                            Container(
+                              color: Colors.black.withOpacity(0.35),
+                              child: const Center(
+                                child: Text(
+                                  '✏️  Change banner',
+                                  style: TextStyle(
+                                    fontSize:   13,
+                                    fontWeight: FontWeight.w700,
+                                    color:      Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        )
+                      : Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Text('🖼', style: TextStyle(fontSize: 24)),
+                            const SizedBox(width: 10),
+                            Column(
+                              mainAxisSize:       MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Upload Event Banner',
+                                  style: TextStyle(
+                                    fontSize:   13,
+                                    fontWeight: FontWeight.w700,
+                                    color:      EBColors.brand,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  'JPG, PNG · max 20 MB',
+                                  style: TextStyle(
+                                    fontSize: 11, color: EBColors.text3),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+            ),
+          ),
+
+          // Remove button — only visible when a banner is picked.
+          // Mirrors the × button on market image thumbnails.
+          if (bannerFile != null && !picking)
+            Positioned(
+              top:   -6,
+              right: -6,
+              child: GestureDetector(
+                onTap: onRemove,
+                child: Container(
+                  width:  22,
+                  height: 22,
+                  decoration: const BoxDecoration(
+                    color: Colors.red, shape: BoxShape.circle),
+                  child: const Icon(
+                    Icons.close_rounded, size: 14, color: Colors.white),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  RSVP SHARE SHEET  (unchanged)
 // ─────────────────────────────────────────────────────────────
 class _RsvpShareSheet extends StatefulWidget {
-  final String eventTitle;
-  final String rsvpUrl;
+  final String       eventTitle;
+  final String       rsvpUrl;
   final VoidCallback onDone;
 
   const _RsvpShareSheet({
@@ -567,23 +713,23 @@ class _RsvpShareSheetState extends State<_RsvpShareSheet> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Handle
           Container(
-            width: 36, height: 4,
+            width:  36,
+            height: 4,
             decoration: BoxDecoration(
               color:        EBColors.border,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
           const SizedBox(height: 20),
-
           const Text('🎉', style: TextStyle(fontSize: 44)),
           const SizedBox(height: 10),
-
           Text(
             'Event Published!',
             style: TextStyle(
-              fontSize: 20, fontWeight: FontWeight.w800, color: EBColors.text,
+              fontSize:   20,
+              fontWeight: FontWeight.w800,
+              color:      EBColors.text,
             ),
           ),
           const SizedBox(height: 4),
@@ -593,10 +739,10 @@ class _RsvpShareSheetState extends State<_RsvpShareSheet> {
           ),
           const SizedBox(height: 20),
 
-          // QR code (qr_flutter package)
+          // QR code
           Container(
-            padding:     const EdgeInsets.all(16),
-            decoration:  BoxDecoration(
+            padding:    const EdgeInsets.all(16),
+            decoration: BoxDecoration(
               color:        EBColors.surface2,
               borderRadius: BorderRadius.circular(16),
             ),
@@ -619,50 +765,50 @@ class _RsvpShareSheetState extends State<_RsvpShareSheet> {
 
           // Copyable link
           Container(
-            padding:    const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
               color:        EBColors.brandPale,
               borderRadius: BorderRadius.circular(12),
-              border:       Border.all(color: EBColors.brandLight, width: 1.5),
+              border: Border.all(color: EBColors.brandLight, width: 1.5),
             ),
-            child: Row(
-              children: [
-                Expanded(
+            child: Row(children: [
+              Expanded(
+                child: Text(
+                  widget.rsvpUrl,
+                  style: TextStyle(
+                    fontSize:   11,
+                    fontWeight: FontWeight.w600,
+                    color:      EBColors.brand,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 10),
+              GestureDetector(
+                onTap: _copyLink,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color:        _copied ? EBColors.brand : EBColors.surface,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: EBColors.brandLight, width: 1.5),
+                  ),
                   child: Text(
-                    widget.rsvpUrl,
+                    _copied ? '✓ Copied' : 'Copy',
                     style: TextStyle(
-                      fontSize: 11, fontWeight: FontWeight.w600, color: EBColors.brand,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                GestureDetector(
-                  onTap: _copyLink,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    padding:    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color:        _copied ? EBColors.brand : EBColors.surface,
-                      borderRadius: BorderRadius.circular(8),
-                      border:       Border.all(color: EBColors.brandLight, width: 1.5),
-                    ),
-                    child: Text(
-                      _copied ? '✓ Copied' : 'Copy',
-                      style: TextStyle(
-                        fontSize:   11,
-                        fontWeight: FontWeight.w700,
-                        color:      _copied ? Colors.white : EBColors.brand,
-                      ),
+                      fontSize:   11,
+                      fontWeight: FontWeight.w700,
+                      color:      _copied ? Colors.white : EBColors.brand,
                     ),
                   ),
                 ),
-              ],
-            ),
+              ),
+            ]),
           ),
           const SizedBox(height: 20),
 
-          // Done
           SizedBox(
             width: double.infinity,
             child: ElevatedButton(
@@ -670,10 +816,9 @@ class _RsvpShareSheetState extends State<_RsvpShareSheet> {
               style: ElevatedButton.styleFrom(
                 backgroundColor: EBColors.brand,
                 foregroundColor: Colors.white,
-                padding:         const EdgeInsets.symmetric(vertical: 15),
+                padding: const EdgeInsets.symmetric(vertical: 15),
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
+                  borderRadius: BorderRadius.circular(14)),
                 elevation: 0,
               ),
               child: const Text(
@@ -689,123 +834,13 @@ class _RsvpShareSheetState extends State<_RsvpShareSheet> {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  BANNER UPLOAD TILE
-// ─────────────────────────────────────────────────────────────
-class _BannerUploadTile extends StatelessWidget {
-  final String?     base64;
-  final bool        uploading;
-  final VoidCallback onTap;
-
-  const _BannerUploadTile({
-    required this.base64,
-    required this.uploading,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-      child: GestureDetector(
-        onTap: uploading ? null : onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          height: 110,
-          decoration: BoxDecoration(
-            color:        base64 != null ? null : EBColors.brandPale,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: base64 != null ? EBColors.brand : EBColors.brandLight,
-              width: 1.5,
-              style: base64 != null ? BorderStyle.solid : BorderStyle.none,
-            ),
-            image: base64 != null
-                ? DecorationImage(
-                    image: MemoryImage(base64Decode(
-                      base64!.contains(',') ? base64!.split(',')[1] : base64!,
-                    )),
-                    fit: BoxFit.cover,
-                  )
-                : null,
-          ),
-          child: uploading
-              ? const Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SizedBox(
-                        width: 22, height: 22,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2, color: EBColors.brand,
-                        ),
-                      ),
-                      SizedBox(height: 8),
-                      Text(
-                        'Uploading banner…',
-                        style: TextStyle(
-                          fontSize: 12, color: EBColors.brand,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                )
-              : base64 != null
-                  ? Container(
-                      decoration: BoxDecoration(
-                        color:        Colors.black.withOpacity(0.35),
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: const Center(
-                        child: Text(
-                          '✏️  Change banner',
-                          style: TextStyle(
-                            fontSize: 13, fontWeight: FontWeight.w700,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                    )
-                  : Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Text('🖼', style: TextStyle(fontSize: 24)),
-                        const SizedBox(width: 10),
-                        Column(
-                          mainAxisSize: MainAxisSize.min,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Upload Event Banner',
-                              style: TextStyle(
-                                fontSize:   13,
-                                fontWeight: FontWeight.w700,
-                                color:      EBColors.brand,
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              'JPG, PNG · max 20 MB',
-                              style: TextStyle(fontSize: 11, color: EBColors.text3),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-        ),
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-//  DATE / TIME TILE
+//  DATE / TIME TILE  (unchanged)
 // ─────────────────────────────────────────────────────────────
 class _DateTimeTile extends StatelessWidget {
-  final String     label;
-  final IconData   icon;
-  final String     value;
-  final bool       isEmpty;
+  final String       label;
+  final IconData     icon;
+  final String       value;
+  final bool         isEmpty;
   final VoidCallback onTap;
 
   const _DateTimeTile({
@@ -823,49 +858,47 @@ class _DateTimeTile extends StatelessWidget {
       child: GestureDetector(
         onTap: onTap,
         child: Container(
-          padding:    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           decoration: BoxDecoration(
             color:        EBColors.surface,
             borderRadius: BorderRadius.circular(12),
-            border:       Border.all(
+            border: Border.all(
               color: isEmpty ? EBColors.border : EBColors.brand,
               width: isEmpty ? 1.5 : 2,
             ),
           ),
-          child: Row(
-            children: [
-              Icon(icon, size: 18, color: isEmpty ? EBColors.text3 : EBColors.brand),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      label,
-                      style: TextStyle(
-                        fontSize: 10, fontWeight: FontWeight.w700,
-                        color: EBColors.text3, letterSpacing: 0.5,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      value,
-                      style: TextStyle(
-                        fontSize:   13,
-                        fontWeight: FontWeight.w600,
-                        color:      isEmpty ? EBColors.text3 : EBColors.text,
-                      ),
-                    ),
-                  ],
+          child: Row(children: [
+            Icon(icon,
+              size:  18,
+              color: isEmpty ? EBColors.text3 : EBColors.brand),
+            const SizedBox(width: 10),
+            Expanded(child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize:      10,
+                    fontWeight:    FontWeight.w700,
+                    color:         EBColors.text3,
+                    letterSpacing: 0.5,
+                  ),
                 ),
-              ),
-              Icon(
-                Icons.chevron_right,
-                size:  18,
-                color: isEmpty ? EBColors.text3 : EBColors.brand,
-              ),
-            ],
-          ),
+                const SizedBox(height: 2),
+                Text(
+                  value,
+                  style: TextStyle(
+                    fontSize:   13,
+                    fontWeight: FontWeight.w600,
+                    color:      isEmpty ? EBColors.text3 : EBColors.text,
+                  ),
+                ),
+              ],
+            )),
+            Icon(Icons.chevron_right,
+              size:  18,
+              color: isEmpty ? EBColors.text3 : EBColors.brand),
+          ]),
         ),
       ),
     );
@@ -873,12 +906,12 @@ class _DateTimeTile extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  CATEGORY CHIP
+//  CATEGORY CHIP  (unchanged)
 // ─────────────────────────────────────────────────────────────
 class _CategoryChip extends StatelessWidget {
-  final String     emoji;
-  final String     label;
-  final bool       selected;
+  final String       emoji;
+  final String       label;
+  final bool         selected;
   final VoidCallback onTap;
 
   const _CategoryChip({
@@ -898,7 +931,7 @@ class _CategoryChip extends StatelessWidget {
         decoration: BoxDecoration(
           color:        selected ? EBColors.brand : EBColors.surface,
           borderRadius: BorderRadius.circular(20),
-          border:       Border.all(
+          border: Border.all(
             color: selected ? EBColors.brand : EBColors.border,
             width: 1.5,
           ),
@@ -924,7 +957,7 @@ class _CategoryChip extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  SECTION LABEL
+//  SECTION LABEL  (unchanged)
 // ─────────────────────────────────────────────────────────────
 class _SectionLabel extends StatelessWidget {
   final String title;
@@ -946,7 +979,7 @@ class _SectionLabel extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  FORM INPUT
+//  FORM INPUT  (unchanged)
 // ─────────────────────────────────────────────────────────────
 class _FormInput extends StatelessWidget {
   final String                    label;
@@ -960,8 +993,8 @@ class _FormInput extends StatelessWidget {
     required this.label,
     required this.hint,
     required this.controller,
-    this.multiline         = false,
-    this.keyboardType      = TextInputType.text,
+    this.multiline        = false,
+    this.keyboardType     = TextInputType.text,
     this.inputFormatters,
   });
 
@@ -975,17 +1008,21 @@ class _FormInput extends StatelessWidget {
           Text(
             label,
             style: TextStyle(
-              fontSize: 12, fontWeight: FontWeight.w700, color: EBColors.text2,
+              fontSize:   12,
+              fontWeight: FontWeight.w700,
+              color:      EBColors.text2,
             ),
           ),
           const SizedBox(height: 6),
           TextField(
-            controller:       controller,
-            keyboardType:     keyboardType,
-            maxLines:         multiline ? 4 : 1,
-            inputFormatters:  inputFormatters,
+            controller:      controller,
+            keyboardType:    keyboardType,
+            maxLines:        multiline ? 4 : 1,
+            inputFormatters: inputFormatters,
             style: TextStyle(
-              fontSize: 13, fontWeight: FontWeight.w600, color: EBColors.text,
+              fontSize:   13,
+              fontWeight: FontWeight.w600,
+              color:      EBColors.text,
             ),
             decoration: InputDecoration(
               hintText:  hint,
@@ -993,8 +1030,7 @@ class _FormInput extends StatelessWidget {
               filled:    true,
               fillColor: EBColors.surface,
               contentPadding: const EdgeInsets.symmetric(
-                horizontal: 14, vertical: 12,
-              ),
+                horizontal: 14, vertical: 12),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide:   BorderSide(color: EBColors.border),
@@ -1005,7 +1041,7 @@ class _FormInput extends StatelessWidget {
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
-                borderSide:   const BorderSide(color: EBColors.brand, width: 2),
+                borderSide: const BorderSide(color: EBColors.brand, width: 2),
               ),
             ),
           ),
